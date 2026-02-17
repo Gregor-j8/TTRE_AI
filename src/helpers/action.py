@@ -10,8 +10,8 @@ class Action:
 
 def _draw_card_action(game_state):
     actions = []
-    deck_has_cards = sum(game_state.draw_pile.values()) > 0
-    
+    deck_has_cards = sum(game_state.draw_pile.values()) > 0 or len(game_state.discard_pile) > 0
+
     if deck_has_cards:
         actions.append(Action(type="draw_card", source1="deck", source2="deck"))
         for card in game_state.face_up_cards:
@@ -28,6 +28,208 @@ def _draw_card_action(game_state):
             if card == "Locomotive":
                 actions.append(Action(type="draw_wild_card", source1="face_up", card1=card))
 
-    return actions 
+    return actions
 
-# def _execute_actions(action, game_state):
+def _claim_route_actions(game_state, player):
+    actions = []
+
+    for city1, city2, key, data in game_state.board.edges(keys=True, data=True):
+        route_id = (city1, city2, key)
+
+        if route_id in game_state.claimed_routes:
+            continue
+
+        route_length = data['carriages']
+        if player.trains < route_length:
+            continue
+
+        route_color = data['color']
+        locomotives = player.hand.get('Locomotive', 0)
+
+        if route_color == 'gray':
+            can_afford = False
+            for color, count in player.hand.items():
+                if color != 'Locomotive':
+                    if count + locomotives >= route_length:
+                        can_afford = True
+                        break
+            if not can_afford:
+                continue
+        else:
+            color_key = route_color + '_cards'
+            color_cards = player.hand.get(color_key, 0)
+            if color_cards + locomotives < route_length:
+                continue
+
+        if route_color == 'gray':
+            for color, count in player.hand.items():
+                if color != 'Locomotive':
+                    if count + locomotives >= route_length:
+                        actions.append(Action(
+                            type="claim_route",
+                            source1=city1,
+                            source2=city2,
+                            card1=str(key),
+                            card2=color
+                        ))
+        else:
+            actions.append(Action(
+                type="claim_route",
+                source1=city1,
+                source2=city2,
+                card1=str(key),
+                card2=route_color + '_cards'
+            ))
+
+    return actions
+
+def _draw_tickets_actions(game_state):
+    actions = []
+    if len(game_state.ticket_deck) > 0:
+        actions.append(Action(type="draw_tickets", source1="ticket_deck"))
+    return actions
+
+def _build_station_actions(game_state, player):
+    actions = []
+
+    if player.stations <= 0:
+        return actions
+
+    cost = 4 - player.stations
+    locomotives = player.hand.get('Locomotive', 0)
+
+    for city in game_state.board.nodes():
+        for color, count in player.hand.items():
+            if color != 'Locomotive':
+                if count + locomotives >= cost:
+                    actions.append(Action(
+                        type="build_station",
+                        source1=city,
+                        card2=color
+                    ))
+
+    return actions
+
+def legal_actions(game_state, player):
+    actions = []
+    actions.extend(_draw_card_action(game_state))
+    actions.extend(_claim_route_actions(game_state, player))
+    actions.extend(_draw_tickets_actions(game_state))
+    actions.extend(_build_station_actions(game_state, player))
+    return actions
+
+def execute_action(action, game_state, player):
+    if action.type == "draw_card":
+        _execute_draw_card(action, game_state, player)
+    elif action.type == "draw_wild_card":
+        _execute_draw_wild(action, game_state, player)
+    elif action.type == "claim_route":
+        _execute_claim_route(action, game_state, player)
+    elif action.type == "draw_tickets":
+        _execute_draw_tickets(action, game_state, player)
+    elif action.type == "build_station":
+        _execute_build_station(action, game_state, player)
+
+def _execute_draw_card(action, game_state, player):
+    import random
+
+    if action.source1 == "deck":
+        available = [c for c, count in game_state.draw_pile.items() if count > 0]
+        if not available:
+            game_state.reshuffle_discard()
+            available = [c for c, count in game_state.draw_pile.items() if count > 0]
+        if available:
+            card = random.choice(available)
+            game_state.draw_pile[card] -= 1
+            player.hand[card] = player.hand.get(card, 0) + 1
+    else:
+        idx = game_state.face_up_cards.index(action.card1)
+        card = game_state.face_up_cards.pop(idx)
+        player.hand[card] = player.hand.get(card, 0) + 1
+        _refill_face_up(game_state)
+
+    if action.source2 == "deck":
+        available = [c for c, count in game_state.draw_pile.items() if count > 0]
+        if not available:
+            game_state.reshuffle_discard()
+            available = [c for c, count in game_state.draw_pile.items() if count > 0]
+        if available:
+            card = random.choice(available)
+            game_state.draw_pile[card] -= 1
+            player.hand[card] = player.hand.get(card, 0) + 1
+    elif action.source2 == "face_up":
+        idx = game_state.face_up_cards.index(action.card2)
+        card = game_state.face_up_cards.pop(idx)
+        player.hand[card] = player.hand.get(card, 0) + 1
+        _refill_face_up(game_state)
+
+def _execute_draw_wild(action, game_state, player):
+    idx = game_state.face_up_cards.index(action.card1)
+    card = game_state.face_up_cards.pop(idx)
+    player.hand[card] = player.hand.get(card, 0) + 1
+    _refill_face_up(game_state)
+
+def _execute_claim_route(action, game_state, player):
+    route_id = (action.source1, action.source2, int(action.card1))
+    route_data = game_state.board.edges[route_id]
+    route_length = route_data['carriages']
+    color_key = action.card2
+
+    color_cards = player.hand.get(color_key, 0)
+
+    color_used = min(color_cards, route_length)
+    locos_used = route_length - color_used
+
+    if color_key in player.hand:
+        player.hand[color_key] -= color_used
+    player.hand['Locomotive'] -= locos_used
+
+    game_state.discard_pile.extend([color_key] * color_used)
+    game_state.discard_pile.extend(['Locomotive'] * locos_used)
+
+    game_state.claimed_routes.add(route_id)
+    player.claimed_routes.append(route_id)
+    player.trains -= route_length
+
+    points = {1: 1, 2: 2, 3: 4, 4: 7, 5: 10, 6: 15}
+    player.points += points.get(route_length, 0)
+
+def _execute_draw_tickets(action, game_state, player):
+    tickets_to_draw = min(3, len(game_state.ticket_deck))
+    drawn = game_state.ticket_deck[:tickets_to_draw]
+    game_state.ticket_deck = game_state.ticket_deck[tickets_to_draw:]
+    player.tickets.extend(drawn)
+
+def _execute_build_station(action, game_state, player):
+    city = action.source1
+    color_key = action.card2
+    cost = 4 - player.stations
+
+    color_cards = player.hand.get(color_key, 0)
+
+    color_used = min(color_cards, cost)
+    locos_used = cost - color_used
+
+    if color_key in player.hand:
+        player.hand[color_key] -= color_used
+    player.hand['Locomotive'] -= locos_used
+
+    game_state.discard_pile.extend([color_key] * color_used)
+    game_state.discard_pile.extend(['Locomotive'] * locos_used)
+
+    player.stations -= 1
+    player.stations_built.append(city)
+
+def _refill_face_up(game_state):
+    import random
+    while len(game_state.face_up_cards) < 5:
+        available = [c for c, count in game_state.draw_pile.items() if count > 0]
+        if not available:
+            if not game_state.reshuffle_discard():
+                break
+            available = [c for c, count in game_state.draw_pile.items() if count > 0]
+            if not available:
+                break
+        card = random.choice(available)
+        game_state.draw_pile[card] -= 1
+        game_state.face_up_cards.append(card)

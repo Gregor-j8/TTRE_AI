@@ -16,3 +16,4 @@ class PlayerState:
         self.tickets = []
         self.stations = 3
         self.claimed_routes = []
+        self.stations_built = []

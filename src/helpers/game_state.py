@@ -1,8 +1,12 @@
 from .player_state import PlayerState
 import random
+import csv
+import os
 
 class GameState:
-    def __init__(self, num_players):
+    def __init__(self, num_players, board):
+        self.board = board
+        self.claimed_routes = set()
         self.list_of_players = []
         for i in range(num_players):
             player_state = PlayerState()
@@ -32,8 +36,27 @@ class GameState:
         }
         self.face_up_cards = []
         self.discard_pile = []
+        self.ticket_deck = self._create_ticket_deck()
         self.current_player = None
         self.setup_face_up_cards()
+
+    def _create_ticket_deck(self):
+        tickets = []
+        data_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'destinations.csv')
+        with open(data_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                tickets.append((row['Source'], row['Target'], int(row['Points'])))
+        random.shuffle(tickets)
+        return tickets
+
+    def reshuffle_discard(self):
+        if not self.discard_pile:
+            return False
+        for card in self.discard_pile:
+            self.draw_pile[card] = self.draw_pile.get(card, 0) + 1
+        self.discard_pile = []
+        return True
     
     def setup_face_up_cards(self):
         for _ in range(5):
