@@ -56,13 +56,14 @@ def _claim_route_actions(game_state, player):
 
         route_color = data['color']
         locomotives = player.hand.get('Locomotive', 0)
+        ferry_requirement = data['engine']
 
-        if route_color == 'gray':
+        if route_color == 'gray' or route_color == 'false':
             for color, count in player.hand.items():
                 if color != 'Locomotive':
                     for color_used in range(route_length + 1):
                         loco_used = route_length - color_used
-                        if count >= color_used and locomotives >= loco_used:
+                        if count >= color_used and locomotives >= loco_used and loco_used >= ferry_requirement:
                             actions.append(Action(
                                 type="claim_route",
                                 source1=city1,
@@ -77,7 +78,7 @@ def _claim_route_actions(game_state, player):
             color_cards = player.hand.get(color_key, 0)
             for color_used in range(route_length + 1):
                 loco_used = route_length - color_used
-                if color_cards >= color_used and locomotives >= loco_used:
+                if color_cards >= color_used and locomotives >= loco_used and loco_used >= ferry_requirement:
                     actions.append(Action(
                         type="claim_route",
                         source1=city1,
@@ -105,7 +106,14 @@ def _build_station_actions(game_state, player):
     cost = 4 - player.stations
     locomotives = player.hand.get('Locomotive', 0)
 
+    occupied_cities = set()
+    for p in game_state.list_of_players:
+        for city in p.stations_built:
+            occupied_cities.add(city)
+
     for city in game_state.board.nodes():
+        if city in occupied_cities:
+            continue
         for color, count in player.hand.items():
             if color != 'Locomotive':
                 for color_used in range(cost + 1):
@@ -181,10 +189,13 @@ def _execute_draw_wild(action, game_state, player):
     _refill_face_up(game_state)
 
 def _execute_claim_route(action, game_state, player):
+    import random
+
     route_id = (action.source1, action.source2, int(action.card1))
     route_data = game_state.board.edges[route_id]
     route_length = route_data['carriages']
     color_key = action.card2
+    is_tunnel = route_data['tunnel'] == 'true'
 
     color_used = action.color_count
     locos_used = action.loco_count
@@ -195,6 +206,38 @@ def _execute_claim_route(action, game_state, player):
 
     game_state.discard_pile.extend([color_key] * color_used)
     game_state.discard_pile.extend(['Locomotive'] * locos_used)
+
+    if is_tunnel:
+        revealed = []
+        for _ in range(3):
+            available = [c for c, count in game_state.draw_pile.items() if count > 0]
+            if not available:
+                game_state.reshuffle_discard()
+                available = [c for c, count in game_state.draw_pile.items() if count > 0]
+            if available:
+                card = random.choice(available)
+                game_state.draw_pile[card] -= 1
+                revealed.append(card)
+
+        extra_needed = sum(1 for c in revealed if c == color_key or c == 'Locomotive')
+        game_state.discard_pile.extend(revealed)
+
+        extra_color_available = player.hand.get(color_key, 0)
+        extra_loco_available = player.hand.get('Locomotive', 0)
+
+        if extra_color_available + extra_loco_available < extra_needed:
+            print(f"  Tunnel failed! Revealed {revealed}, needed {extra_needed} extra, couldn't pay")
+            return
+
+        extra_color_used = min(extra_color_available, extra_needed)
+        extra_loco_used = extra_needed - extra_color_used
+
+        if color_key in player.hand:
+            player.hand[color_key] -= extra_color_used
+        player.hand['Locomotive'] -= extra_loco_used
+
+        game_state.discard_pile.extend([color_key] * extra_color_used)
+        game_state.discard_pile.extend(['Locomotive'] * extra_loco_used)
 
     game_state.claimed_routes.add(route_id)
     player.claimed_routes.append(route_id)

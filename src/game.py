@@ -47,10 +47,19 @@ class Game:
             self._final_scoring()
 
     def _final_scoring(self):
-        for player in self.state.list_of_players:
+        for idx, player in enumerate(self.state.list_of_players):
             player_graph = nx.Graph()
             for route in player.claimed_routes:
                 player_graph.add_edge(route[0], route[1])
+
+            for station_city in player.stations_built:
+                for other_idx, other_player in enumerate(self.state.list_of_players):
+                    if other_idx == idx:
+                        continue
+                    for route in other_player.claimed_routes:
+                        if route[0] == station_city or route[1] == station_city:
+                            player_graph.add_edge(route[0], route[1])
+                            break
 
             for ticket in player.tickets:
                 source, target, points = ticket
@@ -61,6 +70,8 @@ class Game:
                         player.points -= points
                 else:
                     player.points -= points
+
+            player.points += player.stations * 4
 
     def play_random_game(self):
         turn = 0
