@@ -226,7 +226,6 @@ def _execute_claim_route(action, game_state, player):
         extra_loco_available = player.hand.get('Locomotive', 0)
 
         if extra_color_available + extra_loco_available < extra_needed:
-            print(f"  Tunnel failed! Revealed {revealed}, needed {extra_needed} extra, couldn't pay")
             return
 
         extra_color_used = min(extra_color_available, extra_needed)

@@ -73,7 +73,7 @@ class Game:
 
             player.points += player.stations * 4
 
-    def play_random_game(self):
+    def play_game(self, choose_fns, silent=False):
         turn = 0
         no_action_count = 0
         while not self.game_over:
@@ -81,23 +81,37 @@ class Game:
             if not actions:
                 no_action_count += 1
                 if no_action_count > self.num_players * 2:
-                    print("No legal actions available for any player, ending game")
+                    if not silent:
+                        print("No legal actions available for any player, ending game")
                     break
                 self.current_player_idx = (self.current_player_idx + 1) % self.num_players
                 continue
 
             no_action_count = 0
-            action = random.choice(actions)
-            print(f"Turn {turn}: Player {self.current_player_idx} - {action.type}")
+            player = self.get_current_player()
+            choose_fn = choose_fns[self.current_player_idx]
+            action = choose_fn(self.state, player, actions, self.board)
+
+            if not silent:
+                print(f"Turn {turn}: Player {self.current_player_idx} - {action.type}")
+
             self.step(action)
             turn += 1
             if turn > 1000:
-                print("Game exceeded 1000 turns, stopping")
+                if not silent:
+                    print("Game exceeded 1000 turns, stopping")
                 break
 
-        print(f"Game ended after {turn} turns")
-        for i, player in enumerate(self.state.list_of_players):
-            print(f"Player {i}: {player.points} points, {player.trains} trains left")
+        if not silent:
+            print(f"Game ended after {turn} turns")
+            for i, player in enumerate(self.state.list_of_players):
+                print(f"Player {i}: {player.points} points, {player.trains} trains left")
+
+        return [p.points for p in self.state.list_of_players]
+
+    def play_random_game(self):
+        from src.players import random_choose
+        return self.play_game([random_choose, random_choose])
 
 if __name__ == "__main__":
     game = Game(2)

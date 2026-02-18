@@ -9,7 +9,6 @@ def load_board():
         for row in reader:
             city1, city2, distance, color, tunnel, engine = row
             G.add_edge(city1, city2, carriages=int(distance), color=str(color), tunnel=tunnel, engine=int(engine))
-        print(f"Loaded {G.number_of_edges()} edges and {G.number_of_nodes()} nodes.")
         return G
     
 if __name__ == "__main__":
