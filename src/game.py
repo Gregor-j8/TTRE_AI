@@ -1,4 +1,5 @@
 import random
+import networkx as nx
 from src.board import load_board
 from src.helpers.game_state import GameState
 from src.helpers.action import legal_actions, execute_action
@@ -46,7 +47,20 @@ class Game:
             self._final_scoring()
 
     def _final_scoring(self):
-        pass
+        for player in self.state.list_of_players:
+            player_graph = nx.Graph()
+            for route in player.claimed_routes:
+                player_graph.add_edge(route[0], route[1])
+
+            for ticket in player.tickets:
+                source, target, points = ticket
+                if player_graph.has_node(source) and player_graph.has_node(target):
+                    if nx.has_path(player_graph, source, target):
+                        player.points += points
+                    else:
+                        player.points -= points
+                else:
+                    player.points -= points
 
     def play_random_game(self):
         turn = 0

@@ -7,6 +7,8 @@ class Action:
     card1: str = None
     source2: str = None
     card2: str = None
+    color_count: int = 0
+    loco_count: int = 0
 
 def _draw_card_action(game_state):
     actions = []
@@ -33,10 +35,19 @@ def _draw_card_action(game_state):
 def _claim_route_actions(game_state, player):
     actions = []
 
+    player_city_pairs = set()
+    for route in player.claimed_routes:
+        city_pair = tuple(sorted([route[0], route[1]]))
+        player_city_pairs.add(city_pair)
+
     for city1, city2, key, data in game_state.board.edges(keys=True, data=True):
         route_id = (city1, city2, key)
 
         if route_id in game_state.claimed_routes:
+            continue
+
+        city_pair = tuple(sorted([city1, city2]))
+        if city_pair in player_city_pairs:
             continue
 
         route_length = data['carriages']
@@ -47,39 +58,35 @@ def _claim_route_actions(game_state, player):
         locomotives = player.hand.get('Locomotive', 0)
 
         if route_color == 'gray':
-            can_afford = False
             for color, count in player.hand.items():
                 if color != 'Locomotive':
-                    if count + locomotives >= route_length:
-                        can_afford = True
-                        break
-            if not can_afford:
-                continue
+                    for color_used in range(route_length + 1):
+                        loco_used = route_length - color_used
+                        if count >= color_used and locomotives >= loco_used:
+                            actions.append(Action(
+                                type="claim_route",
+                                source1=city1,
+                                source2=city2,
+                                card1=str(key),
+                                card2=color,
+                                color_count=color_used,
+                                loco_count=loco_used
+                            ))
         else:
             color_key = route_color + '_cards'
             color_cards = player.hand.get(color_key, 0)
-            if color_cards + locomotives < route_length:
-                continue
-
-        if route_color == 'gray':
-            for color, count in player.hand.items():
-                if color != 'Locomotive':
-                    if count + locomotives >= route_length:
-                        actions.append(Action(
-                            type="claim_route",
-                            source1=city1,
-                            source2=city2,
-                            card1=str(key),
-                            card2=color
-                        ))
-        else:
-            actions.append(Action(
-                type="claim_route",
-                source1=city1,
-                source2=city2,
-                card1=str(key),
-                card2=route_color + '_cards'
-            ))
+            for color_used in range(route_length + 1):
+                loco_used = route_length - color_used
+                if color_cards >= color_used and locomotives >= loco_used:
+                    actions.append(Action(
+                        type="claim_route",
+                        source1=city1,
+                        source2=city2,
+                        card1=str(key),
+                        card2=color_key,
+                        color_count=color_used,
+                        loco_count=loco_used
+                    ))
 
     return actions
 
@@ -101,12 +108,16 @@ def _build_station_actions(game_state, player):
     for city in game_state.board.nodes():
         for color, count in player.hand.items():
             if color != 'Locomotive':
-                if count + locomotives >= cost:
-                    actions.append(Action(
-                        type="build_station",
-                        source1=city,
-                        card2=color
-                    ))
+                for color_used in range(cost + 1):
+                    loco_used = cost - color_used
+                    if count >= color_used and locomotives >= loco_used:
+                        actions.append(Action(
+                            type="build_station",
+                            source1=city,
+                            card2=color,
+                            color_count=color_used,
+                            loco_count=loco_used
+                        ))
 
     return actions
 
@@ -175,10 +186,8 @@ def _execute_claim_route(action, game_state, player):
     route_length = route_data['carriages']
     color_key = action.card2
 
-    color_cards = player.hand.get(color_key, 0)
-
-    color_used = min(color_cards, route_length)
-    locos_used = route_length - color_used
+    color_used = action.color_count
+    locos_used = action.loco_count
 
     if color_key in player.hand:
         player.hand[color_key] -= color_used
@@ -203,12 +212,9 @@ def _execute_draw_tickets(action, game_state, player):
 def _execute_build_station(action, game_state, player):
     city = action.source1
     color_key = action.card2
-    cost = 4 - player.stations
 
-    color_cards = player.hand.get(color_key, 0)
-
-    color_used = min(color_cards, cost)
-    locos_used = cost - color_used
+    color_used = action.color_count
+    locos_used = action.loco_count
 
     if color_key in player.hand:
         player.hand[color_key] -= color_used
