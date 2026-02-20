@@ -46,11 +46,13 @@ class TTRModel(nn.Module):
 
         if hasattr(data, 'batch') and data.batch is not None:
             graph_embedding = global_mean_pool(x, data.batch)
+            num_graphs = data.batch.max().item() + 1
+            private_state = private_state.view(num_graphs, -1)
         else:
             graph_embedding = x.mean(dim=0, keepdim=True)
+            if private_state.dim() == 1:
+                private_state = private_state.unsqueeze(0)
 
-        if private_state.dim() == 1:
-            private_state = private_state.unsqueeze(0)
         private_embedding = self.private_encoder(private_state)
 
         combined = torch.cat([graph_embedding, private_embedding], dim=1)

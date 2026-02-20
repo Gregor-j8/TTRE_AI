@@ -6,3 +6,5 @@ __pycache__/
 .gitignore
 *.pyc
 /data/*
+/old_ml_files/*
+/training_data/*
