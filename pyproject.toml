@@ -13,8 +13,7 @@ dependencies = [
     "torch-geometric (>=2.7.0,<3.0.0)",
     "wandb (>=0.25.0,<0.26.0)",
     "msgpack (>=1.1.2,<2.0.0)",
-    "open-spiel (>=1.0.0,<2.0.0)"
-]
+    "nicegui (>=0.9.0,<1.0.0)",]
 
 
 [build-system]

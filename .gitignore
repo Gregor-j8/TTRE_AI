@@ -5,4 +5,7 @@ CLAUDE.md
 __pycache__/*
 *.pyc
 /old_ml_files/*
-/training_data/*    
+/training_data/*
+/plan.md
+/model_data/*
+/docs/*

@@ -8,3 +8,6 @@ __pycache__/
 /data/*
 /old_ml_files/*
 /training_data/*
+/plan.md
+/model_data/*
+/docs/*
