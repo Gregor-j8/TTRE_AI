@@ -1,2 +1,3 @@
-from .state_encoder import StateEncoder
-from .model import TTRModel
+from .state_encoder import StateEncoderV2
+from .model import TTRModelV2, TTRModelV2Large
+from .trainer import TrainerV2

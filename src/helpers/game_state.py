@@ -59,12 +59,33 @@ class GameState:
         return True
     
     def setup_face_up_cards(self):
+        self._deal_face_up_cards()
+        while self._check_locomotive_reset():
+            self._deal_face_up_cards()
+
+    def _deal_face_up_cards(self):
+        self.discard_pile.extend(self.face_up_cards)
+        self.face_up_cards = []
         for _ in range(5):
             available_cards = [
-                card for card in self.draw_pile 
+                card for card in self.draw_pile
                 if self.draw_pile[card] > 0
             ]
+            if not available_cards:
+                self.reshuffle_discard()
+                available_cards = [
+                    card for card in self.draw_pile
+                    if self.draw_pile[card] > 0
+                ]
             if available_cards:
                 random_card = random.choice(available_cards)
                 self.face_up_cards.append(random_card)
                 self.draw_pile[random_card] -= 1
+
+    def _check_locomotive_reset(self):
+        loco_count = sum(1 for c in self.face_up_cards if c == 'Locomotive')
+        if loco_count >= 3 and len(self.face_up_cards) == 5:
+            total_cards = sum(self.draw_pile.values())
+            if total_cards >= 5 or self.discard_pile:
+                return True
+        return False

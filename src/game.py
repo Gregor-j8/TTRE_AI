@@ -25,6 +25,10 @@ class Game:
                     self.state.draw_pile[card] -= 1
                     player.hand[card] += 1
 
+            tickets_to_deal = min(3, len(self.state.ticket_deck))
+            player.tickets = self.state.ticket_deck[:tickets_to_deal]
+            self.state.ticket_deck = self.state.ticket_deck[tickets_to_deal:]
+
     def get_current_player(self):
         return self.state.list_of_players[self.current_player_idx]
 
@@ -35,6 +39,9 @@ class Game:
     def step(self, action):
         player = self.get_current_player()
         execute_action(action, self.state, player)
+
+        if player.pending_tickets:
+            return
 
         if player.trains <= 2 and not self.final_round:
             self.final_round = True
@@ -47,10 +54,25 @@ class Game:
             self._final_scoring()
 
     def _final_scoring(self):
+        longest_routes = []
+
         for idx, player in enumerate(self.state.list_of_players):
             player_graph = nx.Graph()
             for route in player.claimed_routes:
-                player_graph.add_edge(route[0], route[1])
+                route_data = self.board.edges[route]
+                length = route_data['carriages']
+                if player_graph.has_edge(route[0], route[1]):
+                    existing = player_graph[route[0]][route[1]].get('weight', 0)
+                    player_graph[route[0]][route[1]]['weight'] = existing + length
+                else:
+                    player_graph.add_edge(route[0], route[1], weight=length)
+
+            longest = self._calculate_longest_path(player_graph)
+            longest_routes.append(longest)
+
+            connection_graph = nx.Graph()
+            for route in player.claimed_routes:
+                connection_graph.add_edge(route[0], route[1])
 
             for station_city in player.stations_built:
                 for other_idx, other_player in enumerate(self.state.list_of_players):
@@ -58,13 +80,13 @@ class Game:
                         continue
                     for route in other_player.claimed_routes:
                         if route[0] == station_city or route[1] == station_city:
-                            player_graph.add_edge(route[0], route[1])
+                            connection_graph.add_edge(route[0], route[1])
                             break
 
             for ticket in player.tickets:
                 source, target, points = ticket
-                if player_graph.has_node(source) and player_graph.has_node(target):
-                    if nx.has_path(player_graph, source, target):
+                if connection_graph.has_node(source) and connection_graph.has_node(target):
+                    if nx.has_path(connection_graph, source, target):
                         player.points += points
                     else:
                         player.points -= points
@@ -72,6 +94,36 @@ class Game:
                     player.points -= points
 
             player.points += player.stations * 4
+
+        if longest_routes:
+            max_length = max(longest_routes)
+            if max_length > 0:
+                for idx, length in enumerate(longest_routes):
+                    if length == max_length:
+                        self.state.list_of_players[idx].points += 10
+
+    def _calculate_longest_path(self, graph):
+        if not graph.nodes():
+            return 0
+
+        longest = 0
+
+        def dfs(node, visited_edges, current_length):
+            nonlocal longest
+            longest = max(longest, current_length)
+
+            for neighbor in graph.neighbors(node):
+                edge = tuple(sorted([node, neighbor]))
+                if edge not in visited_edges:
+                    weight = graph[node][neighbor].get('weight', 1)
+                    visited_edges.add(edge)
+                    dfs(neighbor, visited_edges, current_length + weight)
+                    visited_edges.remove(edge)
+
+        for start_node in graph.nodes():
+            dfs(start_node, set(), 0)
+
+        return longest
 
     def play_game(self, choose_fns, silent=False):
         turn = 0

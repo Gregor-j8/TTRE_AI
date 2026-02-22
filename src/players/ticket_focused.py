@@ -148,6 +148,11 @@ def find_draw_action(player, needed_segments, board, claimed_routes_global, lega
     return legal_actions[0]
 
 def ticket_focused_choose(game_state, player, legal_actions, board):
+    keep_actions = [a for a in legal_actions if a.type == "keep_tickets"]
+    if keep_actions:
+        best = max(keep_actions, key=lambda a: len(a.source1.split(',')))
+        return best
+
     if not player.tickets:
         for action in legal_actions:
             if action.type == "draw_tickets":

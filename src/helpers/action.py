@@ -91,10 +91,22 @@ def _claim_route_actions(game_state, player):
 
     return actions
 
-def _draw_tickets_actions(game_state):
+def _draw_tickets_actions(game_state, player):
     actions = []
-    if len(game_state.ticket_deck) > 0:
+    if len(game_state.ticket_deck) > 0 and not player.pending_tickets:
         actions.append(Action(type="draw_tickets", source1="ticket_deck"))
+    return actions
+
+def _keep_tickets_actions(player):
+    actions = []
+    if not player.pending_tickets:
+        return actions
+
+    n = len(player.pending_tickets)
+    for mask in range(1, 2**n):
+        indices = [i for i in range(n) if mask & (1 << i)]
+        indices_str = ','.join(str(i) for i in indices)
+        actions.append(Action(type="keep_tickets", source1=indices_str))
     return actions
 
 def _build_station_actions(game_state, player):
@@ -130,10 +142,13 @@ def _build_station_actions(game_state, player):
     return actions
 
 def legal_actions(game_state, player):
+    if player.pending_tickets:
+        return _keep_tickets_actions(player)
+
     actions = []
     actions.extend(_draw_card_action(game_state))
     actions.extend(_claim_route_actions(game_state, player))
-    actions.extend(_draw_tickets_actions(game_state))
+    actions.extend(_draw_tickets_actions(game_state, player))
     actions.extend(_build_station_actions(game_state, player))
     return actions
 
@@ -146,6 +161,8 @@ def execute_action(action, game_state, player):
         _execute_claim_route(action, game_state, player)
     elif action.type == "draw_tickets":
         _execute_draw_tickets(action, game_state, player)
+    elif action.type == "keep_tickets":
+        _execute_keep_tickets(action, game_state, player)
     elif action.type == "build_station":
         _execute_build_station(action, game_state, player)
 
@@ -200,13 +217,6 @@ def _execute_claim_route(action, game_state, player):
     color_used = action.color_count
     locos_used = action.loco_count
 
-    if color_key in player.hand:
-        player.hand[color_key] -= color_used
-    player.hand['Locomotive'] -= locos_used
-
-    game_state.discard_pile.extend([color_key] * color_used)
-    game_state.discard_pile.extend(['Locomotive'] * locos_used)
-
     if is_tunnel:
         revealed = []
         for _ in range(3):
@@ -222,8 +232,8 @@ def _execute_claim_route(action, game_state, player):
         extra_needed = sum(1 for c in revealed if c == color_key or c == 'Locomotive')
         game_state.discard_pile.extend(revealed)
 
-        extra_color_available = player.hand.get(color_key, 0)
-        extra_loco_available = player.hand.get('Locomotive', 0)
+        extra_color_available = player.hand.get(color_key, 0) - color_used
+        extra_loco_available = player.hand.get('Locomotive', 0) - locos_used
 
         if extra_color_available + extra_loco_available < extra_needed:
             return
@@ -232,24 +242,41 @@ def _execute_claim_route(action, game_state, player):
         extra_loco_used = extra_needed - extra_color_used
 
         if color_key in player.hand:
-            player.hand[color_key] -= extra_color_used
-        player.hand['Locomotive'] -= extra_loco_used
+            player.hand[color_key] -= (color_used + extra_color_used)
+        player.hand['Locomotive'] -= (locos_used + extra_loco_used)
 
-        game_state.discard_pile.extend([color_key] * extra_color_used)
-        game_state.discard_pile.extend(['Locomotive'] * extra_loco_used)
+        game_state.discard_pile.extend([color_key] * (color_used + extra_color_used))
+        game_state.discard_pile.extend(['Locomotive'] * (locos_used + extra_loco_used))
+    else:
+        if color_key in player.hand:
+            player.hand[color_key] -= color_used
+        player.hand['Locomotive'] -= locos_used
+
+        game_state.discard_pile.extend([color_key] * color_used)
+        game_state.discard_pile.extend(['Locomotive'] * locos_used)
 
     game_state.claimed_routes.add(route_id)
     player.claimed_routes.append(route_id)
     player.trains -= route_length
 
-    points = {1: 1, 2: 2, 3: 4, 4: 7, 5: 10, 6: 15}
+    points = {1: 1, 2: 2, 3: 4, 4: 7, 5: 10, 6: 15, 7: 18, 8: 21}
     player.points += points.get(route_length, 0)
 
 def _execute_draw_tickets(action, game_state, player):
     tickets_to_draw = min(3, len(game_state.ticket_deck))
     drawn = game_state.ticket_deck[:tickets_to_draw]
     game_state.ticket_deck = game_state.ticket_deck[tickets_to_draw:]
-    player.tickets.extend(drawn)
+    player.pending_tickets = drawn
+
+def _execute_keep_tickets(action, game_state, player):
+    indices = [int(i) for i in action.source1.split(',')]
+    kept = [player.pending_tickets[i] for i in indices]
+    returned = [t for i, t in enumerate(player.pending_tickets) if i not in indices]
+
+    player.tickets.extend(kept)
+    game_state.ticket_deck.extend(returned)
+
+    player.pending_tickets = []
 
 def _execute_build_station(action, game_state, player):
     city = action.source1
@@ -281,3 +308,11 @@ def _refill_face_up(game_state):
         card = random.choice(available)
         game_state.draw_pile[card] -= 1
         game_state.face_up_cards.append(card)
+
+    loco_count = sum(1 for c in game_state.face_up_cards if c == 'Locomotive')
+    if loco_count >= 3 and len(game_state.face_up_cards) == 5:
+        total_cards = sum(game_state.draw_pile.values())
+        if total_cards >= 5 or game_state.discard_pile:
+            game_state.discard_pile.extend(game_state.face_up_cards)
+            game_state.face_up_cards = []
+            _refill_face_up(game_state)
