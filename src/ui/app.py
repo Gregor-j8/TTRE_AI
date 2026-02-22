@@ -131,7 +131,7 @@ class GameUI:
         self.route_waypoints = load_route_waypoints()
         self.map_path = os.path.join(os.path.dirname(__file__), '..', '..', 'assets', 'map.png')
 
-    def load_model(self, model_path='training_data/model_final.pt'):
+    def load_model(self, model_path='model_data/models/first_iteration/model_final.pt'):
         try:
             import torch
             from src.ml.trainer import SelfPlayTrainer
@@ -140,7 +140,8 @@ class GameUI:
 
             def model_choose(game_state, player, legal_actions, board):
                 player_idx = game_state.list_of_players.index(player)
-                return trainer.model_choose(game_state, player, legal_actions, board, player_idx)
+                action, _, _ = trainer.model_choose(game_state, player, legal_actions, board, player_idx)
+                return action
 
             self.model_choose_fn = model_choose
             print("Model loaded successfully")
@@ -153,7 +154,7 @@ class GameUI:
         if self.game is None:
             return None
 
-        fig = Figure(figsize=(14, 10))
+        fig = Figure(figsize=(12, 8))
         ax = fig.add_subplot(111)
 
         try:
@@ -162,7 +163,7 @@ class GameUI:
             img_height, img_width = map_img.shape[:2]
         except Exception as e:
             print(f"Could not load map: {e}")
-            img_width, img_height = 1400, 1000
+            img_width, img_height = 1200, 800
             ax.set_xlim(0, img_width)
             ax.set_ylim(img_height, 0)
 
@@ -303,6 +304,10 @@ def create_ui():
                 ui.label('Face Up').classes('font-bold mb-1')
                 faceup_container = ui.row().classes('gap-1 flex-wrap')
 
+            tickets_expansion = ui.expansion('Destination Tickets', icon='confirmation_number')
+            with tickets_expansion:
+                tickets_container = ui.column().classes('max-h-40 overflow-y-auto gap-1')
+
             log_expansion = ui.expansion('Log', icon='list')
             with log_expansion:
                 log_container = ui.column().classes('max-h-32 overflow-y-auto')
@@ -361,6 +366,29 @@ def create_ui():
                         </div>
                     ''')
 
+    def update_tickets():
+        tickets_container.clear()
+        if game_ui.game:
+            current_idx = game_ui.game.current_player_idx
+            player = game_ui.game.state.list_of_players[current_idx]
+            with tickets_container:
+                if not player.tickets:
+                    ui.label('No tickets').classes('text-gray-500 text-sm')
+                else:
+                    for source, target, points in player.tickets:
+                        with ui.row().classes('items-center gap-2'):
+                            ui.html(f'''
+                                <div style="background:#34495e;color:white;padding:4px 10px;
+                                            border-radius:4px;font-size:12px;display:flex;align-items:center;gap:6px">
+                                    <span style="font-weight:bold">{source}</span>
+                                    <span>→</span>
+                                    <span style="font-weight:bold">{target}</span>
+                                    <span style="background:#e67e22;padding:2px 6px;border-radius:3px;margin-left:4px">
+                                        {points} pts
+                                    </span>
+                                </div>
+                            ''')
+
     def add_log(message):
         with log_container:
             ui.label(message).classes('text-sm')
@@ -369,34 +397,48 @@ def create_ui():
         action_card.visible = True
         action_container.clear()
 
-        grouped = {'draw_card': [], 'claim_route': [], 'draw_tickets': [], 'build_station': [], 'draw_wild_card': []}
+        grouped = {'draw_card': [], 'claim_route': [], 'draw_tickets': [], 'build_station': [], 'draw_wild_card': [], 'keep_tickets': []}
         for a in actions:
             if a.type in grouped:
                 grouped[a.type].append(a)
 
         with action_container:
-            with ui.row().classes('gap-2 flex-wrap'):
-                if grouped['draw_card']:
-                    ui.button('Draw from Deck', on_click=lambda: select_action(grouped['draw_card'][0])).props('color=primary')
-
-                if grouped['draw_wild_card']:
-                    ui.button('Draw Locomotive', on_click=lambda: select_action(grouped['draw_wild_card'][0])).props('color=purple')
-
-                if grouped['draw_tickets']:
-                    ui.button('Draw Tickets', on_click=lambda: select_action(grouped['draw_tickets'][0])).props('color=orange')
-
-            if grouped['claim_route']:
-                ui.label('Claim Route:').classes('font-bold mt-2')
+            if grouped['keep_tickets']:
+                player = game_ui.game.get_current_player()
+                ui.label('Choose tickets to keep (must keep at least 1):').classes('font-bold mb-2')
+                with ui.column().classes('gap-2'):
+                    for a in grouped['keep_tickets']:
+                        indices = [int(i) for i in a.source1.split(',')]
+                        ticket_names = []
+                        for i in indices:
+                            t = player.pending_tickets[i]
+                            ticket_names.append(f"{t[0]}→{t[1]} ({t[2]}pts)")
+                        label = ', '.join(ticket_names)
+                        ui.button(f'Keep: {label}',
+                                 on_click=lambda act=a: select_action(act)).props('size=sm')
+            else:
                 with ui.row().classes('gap-2 flex-wrap'):
-                    seen = set()
-                    for a in grouped['claim_route']:
-                        key = (a.source1, a.source2)
-                        if key not in seen:
-                            seen.add(key)
-                            ui.button(f'{a.source1} → {a.source2}',
-                                     on_click=lambda act=a: select_action(act)).props('size=sm')
-                        if len(seen) >= 12:
-                            break
+                    if grouped['draw_card']:
+                        ui.button('Draw from Deck', on_click=lambda: select_action(grouped['draw_card'][0])).props('color=primary')
+
+                    if grouped['draw_wild_card']:
+                        ui.button('Draw Locomotive', on_click=lambda: select_action(grouped['draw_wild_card'][0])).props('color=purple')
+
+                    if grouped['draw_tickets']:
+                        ui.button('Draw Tickets', on_click=lambda: select_action(grouped['draw_tickets'][0])).props('color=orange')
+
+                if grouped['claim_route']:
+                    ui.label('Claim Route:').classes('font-bold mt-2')
+                    with ui.row().classes('gap-2 flex-wrap'):
+                        seen = set()
+                        for a in grouped['claim_route']:
+                            key = (a.source1, a.source2)
+                            if key not in seen:
+                                seen.add(key)
+                                ui.button(f'{a.source1} → {a.source2}',
+                                         on_click=lambda act=a: select_action(act)).props('size=sm')
+                            if len(seen) >= 12:
+                                break
 
     def hide_actions():
         action_card.visible = False
@@ -420,6 +462,7 @@ def create_ui():
             turn_label.set_text(f'Turn: Player {current_idx + 1}')
             update_hand()
             update_faceup()
+            update_tickets()
 
             choose_fn = game_ui.get_choose_fn(current_idx)
 
@@ -468,6 +511,7 @@ def create_ui():
         update_board()
         update_scores()
         update_faceup()
+        update_tickets()
 
         asyncio.create_task(game_loop())
 
