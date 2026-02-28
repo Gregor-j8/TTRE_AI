@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { City, Route as RouteType, Waypoints } from '../../types/board';
+import type { City, Route as RouteType } from '../../types/board';
 import { PLAYER_COLORS } from '../../types/board';
 import { EuropeMap } from './EuropeMap';
 import { CityMarker } from './CityMarker';
@@ -8,7 +8,6 @@ import { useGameState, getRouteId } from '../../hooks/useGameState';
 
 import citiesData from '../../data/cities.csv?raw';
 import routesData from '../../data/routes.csv?raw';
-import waypointsData from '../../data/route_waypoints.json';
 
 function parseCitiesCSV(csv: string): City[] {
   const lines = csv.trim().split('\n');
@@ -41,23 +40,32 @@ function parseRoutesCSV(csv: string): RouteType[] {
   });
 }
 
-function getWaypointsForRoute(
+function generateWaypointsFromCities(
   route: RouteType,
-  waypoints: Waypoints
+  cities: City[]
 ): [number, number][] {
-  const key = `${route.source}-${route.target}-${route.color === 'Gray' ? 'false' : route.color}`;
-  if (waypoints[key]) return waypoints[key];
+  const sourceCity = cities.find(c => c.name === route.source);
+  const targetCity = cities.find(c => c.name === route.target);
 
-  const reverseKey = `${route.target}-${route.source}-${route.color === 'Gray' ? 'false' : route.color}`;
-  if (waypoints[reverseKey]) return [...waypoints[reverseKey]].reverse();
+  if (!sourceCity || !targetCity) return [];
 
-  return [];
+  const dx = targetCity.x - sourceCity.x;
+  const dy = targetCity.y - sourceCity.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+
+  const perpX = -dy / len;
+  const perpY = dx / len;
+  const offset = route.key * 8;
+
+  return [
+    [sourceCity.x + perpX * offset, sourceCity.y + perpY * offset],
+    [targetCity.x + perpX * offset, targetCity.y + perpY * offset],
+  ];
 }
 
 export function Board() {
   const [cities, setCities] = useState<City[]>([]);
   const [routes, setRoutes] = useState<RouteType[]>([]);
-  const [waypoints] = useState<Waypoints>(waypointsData as Waypoints);
 
   const { currentPlayerIdx, claimedRoutes, claimRoute, resetGame, playerCount } =
     useGameState();
@@ -110,7 +118,7 @@ export function Board() {
 
           <g id="routes">
             {routes.map((route, idx) => {
-              const routeWaypoints = getWaypointsForRoute(route, waypoints);
+              const routeWaypoints = generateWaypointsFromCities(route, cities);
               if (routeWaypoints.length === 0) return null;
               const routeId = getRouteId(route);
               const claimedBy = claimedRoutes.get(routeId);
