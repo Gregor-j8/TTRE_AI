@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { City, Route as RouteType } from '../../types/board';
 import { PLAYER_COLORS } from '../../types/board';
 import { EuropeMap } from './EuropeMap';
 import { CityMarker } from './CityMarker';
 import { Route } from './Route';
 import { useGameState, getRouteId } from '../../hooks/useGameState';
+import { useWebSocket } from '../../hooks/useWebSocket';
 
-import citiesData from '../../data/cities.csv?raw';
-import routesData from '../../data/routes.csv?raw';
+import citiesData from '@data/cities.csv?raw';
+import routesData from '@data/routes.csv?raw';
 
 function parseCitiesCSV(csv: string): City[] {
   const lines = csv.trim().split('\n');
@@ -95,22 +96,49 @@ function generateWaypointsFromCities(
   ];
 }
 
+const parsedCities = parseCitiesCSV(citiesData);
+const parsedRoutes = parseRoutesCSV(routesData);
+
 export function Board() {
-  const [cities, setCities] = useState<City[]>([]);
-  const [routes, setRoutes] = useState<RouteType[]>([]);
+  const [cities] = useState<City[]>(parsedCities);
+  const [routes] = useState<RouteType[]>(parsedRoutes);
 
-  const { currentPlayerIdx, claimedRoutes, claimRoute, resetGame, playerCount } =
+  const { currentPlayerIdx, claimedRoutes, claimRoute, resetGame, playerCount, players, gameOver, connectedToServer } =
     useGameState();
-
-  useEffect(() => {
-    setCities(parseCitiesCSV(citiesData));
-    setRoutes(parseRoutesCSV(routesData));
-  }, []);
+  const { connected, startGame } = useWebSocket();
 
   return (
-    <div className="w-full h-full flex flex-col bg-gray-800">
+    <div className="w-full h-full flex flex-col bg-gray-800 relative">
       <div className="flex items-center justify-between px-4 py-2 bg-gray-900">
         <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-2 h-2 rounded-full ${
+                connected ? 'bg-green-500' : connectedToServer ? 'bg-yellow-500' : 'bg-red-500'
+              }`}
+            />
+            <span className="text-gray-400 text-xs">
+              {connected ? 'Connected' : connectedToServer ? 'Synced' : 'Offline'}
+            </span>
+          </div>
+
+          {connected && !gameOver && (
+            <div className="flex gap-2">
+              <button
+                onClick={() => startGame('visualizer')}
+                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded transition-colors"
+              >
+                Watch AI
+              </button>
+              <button
+                onClick={() => startGame('singleplayer')}
+                className="px-3 py-1 bg-green-600 hover:bg-green-500 text-white text-sm rounded transition-colors"
+              >
+                Play vs AI
+              </button>
+            </div>
+          )}
+
           <span className="text-white text-sm">Current Player:</span>
           <div className="flex gap-2">
             {Array.from({ length: playerCount }).map((_, idx) => (
@@ -127,9 +155,30 @@ export function Board() {
             ))}
           </div>
         </div>
+
         <div className="flex items-center gap-4">
+          {players.length > 0 && (
+            <div className="flex gap-4">
+              {players.map((player, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center gap-2 px-2 py-1 rounded"
+                  style={{ backgroundColor: `${PLAYER_COLORS[idx]}33` }}
+                >
+                  <div
+                    className="w-3 h-3 rounded-full"
+                    style={{ backgroundColor: PLAYER_COLORS[idx] }}
+                  />
+                  <span className="text-white text-xs">
+                    {player.trains} trains | {player.points} pts
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
           <span className="text-gray-400 text-sm">
-            Routes claimed: {claimedRoutes.size}
+            Routes: {claimedRoutes.size}
           </span>
           <button
             onClick={resetGame}
@@ -139,6 +188,39 @@ export function Board() {
           </button>
         </div>
       </div>
+
+      {gameOver && (
+        <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-800 p-8 rounded-lg text-center">
+            <h2 className="text-2xl text-white mb-4">Game Over!</h2>
+            <div className="flex flex-col gap-2 mb-6">
+              {players
+                .map((p, idx) => ({ ...p, idx }))
+                .sort((a, b) => b.points - a.points)
+                .map((player, rank) => (
+                  <div
+                    key={player.idx}
+                    className="flex items-center gap-3 px-4 py-2 rounded"
+                    style={{ backgroundColor: `${PLAYER_COLORS[player.idx]}44` }}
+                  >
+                    <span className="text-white font-bold">#{rank + 1}</span>
+                    <div
+                      className="w-4 h-4 rounded-full"
+                      style={{ backgroundColor: PLAYER_COLORS[player.idx] }}
+                    />
+                    <span className="text-white">{player.points} points</span>
+                  </div>
+                ))}
+            </div>
+            <button
+              onClick={resetGame}
+              className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors"
+            >
+              Play Again
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 flex items-center justify-center p-4">
         <svg
