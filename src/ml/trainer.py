@@ -20,8 +20,8 @@ class TrainerV2:
         self,
         hidden_dim=256,
         lr=3e-4,
-        gamma=0.99,
-        entropy_coef=0.02,
+        gamma=0.97,
+        entropy_coef=0.003,
         epsilon=0.2,
         ppo_epochs=4,
         batch_size=64,
@@ -101,17 +101,21 @@ class TrainerV2:
 
         print(f"Benchmark model loaded: {sum(p.numel() for p in old_model.parameters()):,} params")
 
-    def collect_imitation_data(self, num_games):
+    def collect_imitation_data(self, num_games, heuristic_ratio=0.1):
         if self.benchmark_model is None:
             print("No benchmark model loaded, cannot collect imitation data")
             return []
 
-        print(f"Collecting {num_games} games from benchmark model...")
+        heuristic_games = int(num_games * heuristic_ratio)
+        benchmark_games = num_games - heuristic_games
+        print(f"Collecting {num_games} games ({benchmark_games} benchmark vs benchmark, {heuristic_games} benchmark vs heuristic)...")
         samples = []
 
         for game_num in range(num_games):
             game = Game(2)
             turn = 0
+            use_heuristic_opponent = game_num >= benchmark_games
+            benchmark_player = random.randint(0, 1) if use_heuristic_opponent else None
 
             while not game.game_over and turn < 500:
                 actions = game.get_legal_actions()
@@ -122,44 +126,52 @@ class TrainerV2:
                 player_idx = game.current_player_idx
                 player = game.get_current_player()
 
-                benchmark_action = self.benchmark_choose(
-                    game.state, player, actions, game.board, player_idx
-                )
+                if use_heuristic_opponent and player_idx != benchmark_player:
+                    action = ticket_focused_choose(game.state, player, actions, game.board)
+                else:
+                    action = self.benchmark_choose(
+                        game.state, player, actions, game.board, player_idx
+                    )
+                    new_data = self.encoder.encode_state(game.state, player_idx)
+                    action_idx = self.get_action_idx(action)
+                    if action_idx is not None:
+                        samples.append({
+                            'data': new_data,
+                            'action_idx': action_idx
+                        })
 
-                new_data = self.encoder.encode_state(game.state, player_idx)
-                action_idx = self.get_action_idx(benchmark_action)
-
-                if action_idx is not None:
-                    samples.append({
-                        'data': new_data,
-                        'action_idx': action_idx
-                    })
-
-                game.step(benchmark_action)
+                game.step(action)
                 turn += 1
 
-            if (game_num + 1) % 50 == 0:
+            if (game_num + 1) % 100 == 0:
                 print(f"  Collected {game_num + 1}/{num_games} games, {len(samples)} samples")
 
         print(f"Collected {len(samples)} imitation samples from {num_games} games")
         return samples
 
-    def train_imitation(self, samples, epochs=5):
+    def train_imitation(self, samples, epochs=5, val_ratio=0.1, patience=3):
         if not samples:
             return 0.0
 
-        print(f"Training imitation for {epochs} epochs on {len(samples)} samples...")
+        random.shuffle(samples)
+        val_size = int(len(samples) * val_ratio)
+        val_samples = samples[:val_size]
+        train_samples = samples[val_size:]
+
+        print(f"Training imitation: {len(train_samples)} train, {len(val_samples)} val, {epochs} epochs max")
         self.model.train()
-        total_loss = 0.0
-        num_updates = 0
+
+        best_val_loss = float('inf')
+        epochs_without_improvement = 0
+        best_epoch = 0
 
         for epoch in range(epochs):
-            random.shuffle(samples)
+            random.shuffle(train_samples)
             epoch_loss = 0.0
             epoch_updates = 0
 
-            for i in range(0, len(samples), self.batch_size):
-                batch_samples = samples[i:i + self.batch_size]
+            for i in range(0, len(train_samples), self.batch_size):
+                batch_samples = train_samples[i:i + self.batch_size]
                 if len(batch_samples) < 4:
                     continue
 
@@ -182,13 +194,134 @@ class TrainerV2:
                 epoch_loss += loss.item()
                 epoch_updates += 1
 
-            if epoch_updates > 0:
-                avg_epoch_loss = epoch_loss / epoch_updates
-                print(f"  Epoch {epoch + 1}/{epochs}: Loss={avg_epoch_loss:.4f}")
-                total_loss += epoch_loss
-                num_updates += epoch_updates
+            train_loss = epoch_loss / epoch_updates if epoch_updates > 0 else 0.0
 
-        return total_loss / num_updates if num_updates > 0 else 0.0
+            self.model.eval()
+            val_loss = 0.0
+            val_updates = 0
+            with torch.no_grad():
+                for i in range(0, len(val_samples), self.batch_size):
+                    batch_samples = val_samples[i:i + self.batch_size]
+                    if len(batch_samples) < 4:
+                        continue
+                    data_list = [s['data'] for s in batch_samples]
+                    batch = Batch.from_data_list(data_list).to(self.device)
+                    action_indices = torch.tensor([s['action_idx'] for s in batch_samples], device=self.device)
+                    policy_logits, _ = self.model(batch)
+                    loss = F.cross_entropy(policy_logits, action_indices)
+                    val_loss += loss.item()
+                    val_updates += 1
+            self.model.train()
+
+            avg_val_loss = val_loss / val_updates if val_updates > 0 else 0.0
+            print(f"  Epoch {epoch + 1}/{epochs}: Train={train_loss:.4f}, Val={avg_val_loss:.4f}")
+
+            if (epoch + 1) % 2 == 0:
+                self.save(f"model_v2_imitation_ep{epoch + 1}.pt")
+                vs_random = self.evaluate_vs_random(50)
+                vs_heuristic = self.evaluate_vs_heuristic(50)
+                print(f"    -> Checkpoint: vs Random={vs_random*100:.0f}%, vs Heuristic={vs_heuristic*100:.0f}%")
+
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_epoch = epoch + 1
+                epochs_without_improvement = 0
+                self.save("model_v2_imitation_best.pt")
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= patience:
+                    print(f"  Early stopping at epoch {epoch + 1} (best was epoch {best_epoch})")
+                    break
+
+        print(f"Loading best checkpoint from epoch {best_epoch}")
+        self.load("model_v2_imitation_best.pt")
+        return best_val_loss
+
+    def pretrain_value(self, num_episodes=200, epochs=10, use_mixed=False):
+        print(f"\nValue pretraining: {num_episodes} episodes, {epochs} epochs, mixed={use_mixed}")
+
+        frozen_params = []
+        value_params = []
+        for name, param in self.model.named_parameters():
+            if 'value' in name or 'value_head' in name:
+                value_params.append(name)
+            else:
+                param.requires_grad = False
+                frozen_params.append(name)
+
+        print(f"  Frozen {len(frozen_params)} params (backbone+policy), training {len(value_params)} value params")
+
+        self.model.eval()
+
+        print(f"  Collecting {num_episodes} episodes with trained policy...")
+        if use_mixed and self.benchmark_model is not None:
+            all_trajectories, all_rewards = self.collect_mixed_episodes(num_episodes)
+        else:
+            all_trajectories, all_rewards = self.collect_episodes(num_episodes)
+
+        samples = self.prepare_training_data(all_trajectories, all_rewards)
+        print(f"  Collected {len(samples)} training samples")
+
+        if not samples:
+            print("  No samples collected, skipping value pretraining")
+            for param in self.model.parameters():
+                param.requires_grad = True
+            return
+
+        value_optimizer = optim.Adam(
+            [p for p in self.model.parameters() if p.requires_grad],
+            lr=1e-3
+        )
+
+        for epoch in range(epochs):
+            random.shuffle(samples)
+            epoch_loss = 0.0
+            epoch_updates = 0
+            epoch_explained_var = 0.0
+
+            for i in range(0, len(samples), self.batch_size):
+                batch_samples = samples[i:i + self.batch_size]
+                if len(batch_samples) < 4:
+                    continue
+
+                data_list = [s['data'] for s in batch_samples]
+                batch = Batch.from_data_list(data_list).to(self.device)
+
+                returns = torch.tensor(
+                    [s['return'] for s in batch_samples],
+                    device=self.device,
+                    dtype=torch.float32
+                )
+
+                _, values = self.model(batch)
+                values = values.squeeze(-1)
+
+                loss = F.mse_loss(values, returns)
+
+                value_optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
+                value_optimizer.step()
+
+                with torch.no_grad():
+                    var_returns = returns.var()
+                    var_residual = (returns - values).var()
+                    explained_var = 1 - var_residual / (var_returns + 1e-8)
+
+                epoch_loss += loss.item()
+                epoch_explained_var += explained_var.item()
+                epoch_updates += 1
+
+            avg_loss = epoch_loss / epoch_updates if epoch_updates > 0 else 0.0
+            avg_ev = epoch_explained_var / epoch_updates if epoch_updates > 0 else 0.0
+            print(f"  Epoch {epoch + 1}/{epochs}: value_loss={avg_loss:.4f}, explained_var={avg_ev:.3f}")
+
+        for param in self.model.parameters():
+            param.requires_grad = True
+        self.model.train()
+
+        print(f"  Value pretraining complete. Final explained_var={avg_ev:.3f}")
+        self.save("model_v2_post_value_pretrain.pt")
 
     def collect_mixed_episodes(self, num_episodes):
         all_trajectories = []
@@ -539,10 +672,13 @@ class TrainerV2:
                     continue
 
                 returns = []
-                G = final_reward
+                G = 0
 
-                for step in reversed(player_traj):
-                    G = step['intermediate_reward'] + self.gamma * G
+                for i, step in enumerate(reversed(player_traj)):
+                    reward = step['intermediate_reward']
+                    if i == 0:
+                        reward += final_reward
+                    G = reward + self.gamma * G
                     returns.insert(0, G)
 
                 for step, ret in zip(player_traj, returns):
@@ -557,11 +693,15 @@ class TrainerV2:
 
     def train_ppo(self, samples):
         if not samples:
-            return 0.0, 0.0, 0.0
+            return {'loss': 0.0, 'policy_loss': 0.0, 'value_loss': 0.0,
+                    'entropy': 0.0, 'adv_std': 0.0, 'explained_var': 0.0}
 
         total_loss = 0.0
         total_policy_loss = 0.0
         total_value_loss = 0.0
+        total_entropy = 0.0
+        total_adv_std = 0.0
+        total_explained_var = 0.0
         num_updates = 0
 
         for epoch in range(self.ppo_epochs):
@@ -597,7 +737,12 @@ class TrainerV2:
                 new_log_probs = log_probs.gather(1, action_indices.unsqueeze(1)).squeeze(1)
 
                 advantages = returns - values.detach()
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                adv_std = advantages.std().item()
+
+                if adv_std > 1e-4:
+                    advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
+                else:
+                    advantages = advantages - advantages.mean()
 
                 ratio = torch.exp(new_log_probs - old_log_probs)
                 surr1 = ratio * advantages
@@ -615,16 +760,32 @@ class TrainerV2:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
                 self.optimizer.step()
 
+                with torch.no_grad():
+                    var_returns = returns.var()
+                    var_residual = (returns - values).var()
+                    explained_var = 1 - var_residual / (var_returns + 1e-8)
+
                 total_loss += loss.item()
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()
+                total_entropy += entropy.item()
+                total_adv_std += adv_std
+                total_explained_var += explained_var.item()
                 num_updates += 1
 
         self.scheduler.step()
 
         if num_updates > 0:
-            return total_loss / num_updates, total_policy_loss / num_updates, total_value_loss / num_updates
-        return 0.0, 0.0, 0.0
+            return {
+                'loss': total_loss / num_updates,
+                'policy_loss': total_policy_loss / num_updates,
+                'value_loss': total_value_loss / num_updates,
+                'entropy': total_entropy / num_updates,
+                'adv_std': total_adv_std / num_updates,
+                'explained_var': total_explained_var / num_updates
+            }
+        return {'loss': 0.0, 'policy_loss': 0.0, 'value_loss': 0.0,
+                'entropy': 0.0, 'adv_std': 0.0, 'explained_var': 0.0}
 
     def model_choose(self, game_state, player, legal_actions, board, player_idx, explore=False):
         data = self.encoder.encode_state(game_state, player_idx).to(self.device)
@@ -795,7 +956,7 @@ class TrainerV2:
         self.model.train()
         return wins / num_games
 
-    def train(self, num_episodes=2000, eval_every=500, imitation_games=0, mixed_ratio=0.5):
+    def train(self, num_episodes=2000, eval_every=500, imitation_games=0, imitation_epochs=5, imitation_heuristic_ratio=0.1, mixed_ratio=0.5, value_pretrain_episodes=0):
         print(f"Starting V2 training for {num_episodes} episodes...")
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         print(f"Reward shaping: claim={self.reward_claim_scale}, ticket={self.reward_ticket_complete}, hoard_penalty={self.reward_hoard_penalty}")
@@ -804,10 +965,10 @@ class TrainerV2:
 
         if imitation_games > 0 and self.benchmark_model is not None:
             print("\n" + "=" * 60)
-            print("PHASE 1: IMITATION WARMUP")
+            print(f"PHASE 1: IMITATION WARMUP ({imitation_games} games, {imitation_epochs} epochs, {imitation_heuristic_ratio*100:.0f}% vs heuristic)")
             print("=" * 60)
-            imitation_samples = self.collect_imitation_data(imitation_games)
-            self.train_imitation(imitation_samples, epochs=5)
+            imitation_samples = self.collect_imitation_data(imitation_games, heuristic_ratio=imitation_heuristic_ratio)
+            self.train_imitation(imitation_samples, epochs=imitation_epochs)
 
             print("\n--- Post-Imitation Evaluation ---")
             vs_random = self.evaluate_vs_random(100)
@@ -818,9 +979,42 @@ class TrainerV2:
             print(f"vs Benchmark: {vs_benchmark*100:.1f}%")
             self.save("model_v2_post_imitation.pt")
 
+        if value_pretrain_episodes > 0:
+            print("\n" + "=" * 60)
+            print(f"PHASE 1.5: VALUE HEAD PRETRAINING ({value_pretrain_episodes} episodes)")
+            print("=" * 60)
+            use_mixed = mixed_ratio > 0 and self.benchmark_model is not None
+            self.pretrain_value(num_episodes=value_pretrain_episodes, epochs=10, use_mixed=use_mixed)
+
+            print("\n--- Post-Value-Pretrain Evaluation ---")
+            vs_random = self.evaluate_vs_random(100)
+            vs_heuristic = self.evaluate_vs_heuristic(100)
+            vs_benchmark = self.evaluate_vs_benchmark(100)
+            print(f"vs Random: {vs_random*100:.1f}%")
+            print(f"vs Heuristic: {vs_heuristic*100:.1f}%")
+            print(f"vs Benchmark: {vs_benchmark*100:.1f}%")
+
         print("\n" + "=" * 60)
         print(f"PHASE 2: MIXED TRAINING (opponent_ratio={mixed_ratio})")
         print("=" * 60)
+
+        backbone_params = []
+        head_params = []
+        for name, param in self.model.named_parameters():
+            if 'policy' in name or 'value' in name:
+                head_params.append(name)
+            else:
+                param.requires_grad = False
+                backbone_params.append(name)
+        print(f"  Frozen {len(backbone_params)} backbone params, training {len(head_params)} head params")
+
+        self.optimizer = optim.AdamW(
+            [p for p in self.model.parameters() if p.requires_grad],
+            lr=self.optimizer.param_groups[0]['lr'],
+            weight_decay=0.01
+        )
+
+        self.model.eval()
 
         losses = []
         total_episodes = 0
@@ -838,17 +1032,23 @@ class TrainerV2:
             samples = self.prepare_training_data(all_trajectories, all_rewards)
 
             train_start = time.time()
-            loss, policy_loss, value_loss = self.train_ppo(samples)
+            stats = self.train_ppo(samples)
             train_time = time.time() - train_start
 
-            losses.append(loss)
+            losses.append(stats['loss'])
             total_episodes += len(all_trajectories)
 
             if total_episodes % (self.batch_size * 5) < self.batch_size:
                 avg_loss = sum(losses[-5:]) / min(5, len(losses))
                 eps_per_sec = self.batch_size / (collect_time + train_time)
                 lr = self.optimizer.param_groups[0]['lr']
-                print(f"Episode {total_episodes}: Loss={avg_loss:.4f} (p={policy_loss:.4f}, v={value_loss:.4f}), LR={lr:.2e}, {eps_per_sec:.1f} eps/sec", flush=True)
+                print(f"Episode {total_episodes}: Loss={avg_loss:.4f} (p={stats['policy_loss']:.4f}, v={stats['value_loss']:.4f}), LR={lr:.2e}, {eps_per_sec:.1f} eps/sec", flush=True)
+                print(f"  Diagnostics: entropy={stats['entropy']:.3f}, adv_std={stats['adv_std']:.4f}, explained_var={stats['explained_var']:.3f}", flush=True)
+
+                if stats['entropy'] < 1.0:
+                    print(f"  WARNING: Low entropy ({stats['entropy']:.3f}) - policy becoming deterministic!", flush=True)
+                if stats['explained_var'] < 0.0:
+                    print(f"  WARNING: Negative explained variance ({stats['explained_var']:.3f}) - value function unhelpful!", flush=True)
 
             if total_episodes % eval_every < self.batch_size:
                 vs_random = self.evaluate_vs_random(100)
@@ -910,14 +1110,19 @@ if __name__ == "__main__":
     parser.add_argument('--benchmark', type=str, help='Path to benchmark model checkpoint')
     parser.add_argument('--resume', type=str, help='Path to checkpoint to resume from')
     parser.add_argument('--imitation-games', type=int, default=200, help='Number of games for imitation warmup')
+    parser.add_argument('--imitation-epochs', type=int, default=5, help='Number of epochs for imitation training')
+    parser.add_argument('--imitation-heuristic', type=float, default=0.1, help='Ratio of imitation games vs heuristic opponent')
     parser.add_argument('--mixed-ratio', type=float, default=0.5, help='Ratio of games against benchmark (0=self-play, 1=all vs benchmark)')
+    parser.add_argument('--value-pretrain', type=int, default=200, help='Episodes to pretrain value head (0 to skip)')
     args = parser.parse_args()
 
     print("=" * 60)
     print(f"V2 TRAINING: {args.num_episodes} episodes")
     print(f"  batch_size={args.batch_size}, lr={args.lr}")
     print(f"  large_model={args.large}")
-    print(f"  imitation_games={args.imitation_games}, mixed_ratio={args.mixed_ratio}")
+    print(f"  imitation: {args.imitation_games} games x {args.imitation_epochs} epochs ({args.imitation_heuristic*100:.0f}% vs heuristic)")
+    print(f"  value_pretrain: {args.value_pretrain} episodes")
+    print(f"  mixed_ratio={args.mixed_ratio}")
     print("=" * 60)
 
     trainer = TrainerV2(
@@ -946,5 +1151,8 @@ if __name__ == "__main__":
         num_episodes=args.num_episodes,
         eval_every=500,
         imitation_games=args.imitation_games,
-        mixed_ratio=args.mixed_ratio
+        imitation_epochs=args.imitation_epochs,
+        imitation_heuristic_ratio=args.imitation_heuristic,
+        mixed_ratio=args.mixed_ratio,
+        value_pretrain_episodes=args.value_pretrain
     )

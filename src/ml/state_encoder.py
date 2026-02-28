@@ -1,10 +1,13 @@
 import torch
 import networkx as nx
+from itertools import islice
 from torch_geometric.data import Data
 
 COLORS = ['Red', 'Blue', 'Green', 'Yellow', 'Black', 'White', 'Orange', 'Pink', 'false']
-CARD_TYPES = ['red_cards', 'blue_cards', 'green_cards', 'yellow_cards',
-              'black_cards', 'white_cards', 'orange_cards', 'pink_cards', 'Locomotive']
+CARD_TYPES = [
+            'red_cards', 'blue_cards', 'green_cards', 'yellow_cards',
+            'black_cards', 'white_cards', 'orange_cards', 'pink_cards', 'Locomotive'
+        ]
 
 COLOR_TO_CARD = {
     'Red': 'red_cards', 'Blue': 'blue_cards', 'Green': 'green_cards',
@@ -316,8 +319,10 @@ class StateEncoderV2:
         path_features = []
 
         try:
-            paths = list(nx.shortest_simple_paths(available_graph, source, target, weight='weight'))
-            paths = paths[:self.max_paths_per_ticket]
+            paths = list(islice(
+                nx.shortest_simple_paths(available_graph, source, target, weight='weight'),
+                self.max_paths_per_ticket
+            ))
         except nx.NetworkXNoPath:
             paths = []
 

@@ -7,9 +7,9 @@ import time
 import random
 
 from src.game import Game
-from src.ml.state_encoder import StateEncoder
-from src.ml.model import TTRModel
-from src.ml.mcts import MCTS
+from .state_encoder import StateEncoder
+from .model import TTRModel
+from .mcts import MCTS
 from src.players import random_choose, ticket_focused_choose
 
 

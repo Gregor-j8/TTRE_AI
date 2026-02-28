@@ -194,10 +194,21 @@ def _execute_draw_card(action, game_state, player):
             game_state.draw_pile[card] -= 1
             player.hand[card] = player.hand.get(card, 0) + 1
     elif action.source2 == "face_up":
-        idx = game_state.face_up_cards.index(action.card2)
-        card = game_state.face_up_cards.pop(idx)
-        player.hand[card] = player.hand.get(card, 0) + 1
-        _refill_face_up(game_state)
+        if action.card2 in game_state.face_up_cards:
+            idx = game_state.face_up_cards.index(action.card2)
+            card = game_state.face_up_cards.pop(idx)
+            player.hand[card] = player.hand.get(card, 0) + 1
+            _refill_face_up(game_state)
+        else:
+            available = [c for c, count in game_state.draw_pile.items() if count > 0]
+            if not available:
+                game_state.reshuffle_discard()
+                available = [c for c, count in game_state.draw_pile.items() if count > 0]
+            if available:
+                card = random.choice(available)
+                game_state.draw_pile[card] -= 1
+                player.hand[card] = player.hand.get(card, 0) + 1
+            _refill_face_up(game_state)
 
 def _execute_draw_wild(action, game_state, player):
     idx = game_state.face_up_cards.index(action.card1)
@@ -295,8 +306,10 @@ def _execute_build_station(action, game_state, player):
     player.stations -= 1
     player.stations_built.append(city)
 
-def _refill_face_up(game_state):
+def _refill_face_up(game_state, depth=0):
     import random
+    max_depth = 10
+
     while len(game_state.face_up_cards) < 5:
         available = [c for c, count in game_state.draw_pile.items() if count > 0]
         if not available:
@@ -310,9 +323,9 @@ def _refill_face_up(game_state):
         game_state.face_up_cards.append(card)
 
     loco_count = sum(1 for c in game_state.face_up_cards if c == 'Locomotive')
-    if loco_count >= 3 and len(game_state.face_up_cards) == 5:
+    if loco_count >= 3 and len(game_state.face_up_cards) == 5 and depth < max_depth:
         total_cards = sum(game_state.draw_pile.values())
         if total_cards >= 5 or game_state.discard_pile:
             game_state.discard_pile.extend(game_state.face_up_cards)
             game_state.face_up_cards = []
-            _refill_face_up(game_state)
+            _refill_face_up(game_state, depth + 1)
