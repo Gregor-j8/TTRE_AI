@@ -42,12 +42,19 @@ function parseRoutesCSV(csv: string): RouteType[] {
 
 function generateWaypointsFromCities(
   route: RouteType,
-  cities: City[]
+  cities: City[],
+  allRoutes: RouteType[]
 ): [number, number][] {
   const sourceCity = cities.find(c => c.name === route.source);
   const targetCity = cities.find(c => c.name === route.target);
 
   if (!sourceCity || !targetCity) return [];
+
+  const isDoubleRoute = allRoutes.some(
+    r => r !== route &&
+    ((r.source === route.source && r.target === route.target) ||
+     (r.source === route.target && r.target === route.source))
+  );
 
   const dx = targetCity.x - sourceCity.x;
   const dy = targetCity.y - sourceCity.y;
@@ -55,11 +62,36 @@ function generateWaypointsFromCities(
 
   const perpX = -dy / len;
   const perpY = dx / len;
-  const offset = route.key * 8;
+  const parallelOffset = isDoubleRoute ? (route.key === 0 ? -5 : 5) : 0;
+
+  const startX = sourceCity.x + perpX * parallelOffset;
+  const startY = sourceCity.y + perpY * parallelOffset;
+  const endX = targetCity.x + perpX * parallelOffset;
+  const endY = targetCity.y + perpY * parallelOffset;
+
+  if (isDoubleRoute) {
+    return [
+      [startX, startY],
+      [endX, endY],
+    ];
+  }
+
+  const curveAmount = len > 150 ? 20 : len > 80 ? 12 : 0;
+
+  if (curveAmount === 0) {
+    return [
+      [startX, startY],
+      [endX, endY],
+    ];
+  }
+
+  const midX = (startX + endX) / 2 + perpX * curveAmount;
+  const midY = (startY + endY) / 2 + perpY * curveAmount;
 
   return [
-    [sourceCity.x + perpX * offset, sourceCity.y + perpY * offset],
-    [targetCity.x + perpX * offset, targetCity.y + perpY * offset],
+    [startX, startY],
+    [midX, midY],
+    [endX, endY],
   ];
 }
 
@@ -118,7 +150,7 @@ export function Board() {
 
           <g id="routes">
             {routes.map((route, idx) => {
-              const routeWaypoints = generateWaypointsFromCities(route, cities);
+              const routeWaypoints = generateWaypointsFromCities(route, cities, routes);
               if (routeWaypoints.length === 0) return null;
               const routeId = getRouteId(route);
               const claimedBy = claimedRoutes.get(routeId);

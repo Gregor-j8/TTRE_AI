@@ -9,11 +9,6 @@ interface RouteProps {
   onClaim?: (route: RouteType) => void;
 }
 
-function waypointsToPath(points: [number, number][]): string {
-  if (points.length < 2) return '';
-  const [first, ...rest] = points;
-  return `M ${first[0]} ${first[1]} ${rest.map(([x, y]) => `L ${x} ${y}`).join(' ')}`;
-}
 
 function getRouteColor(color: RouteColor): string {
   return ROUTE_COLORS[color] || ROUTE_COLORS.Gray;
@@ -30,11 +25,13 @@ function interpolatePoints(
     return acc + Math.hypot(p[0] - prev[0], p[1] - prev[1]);
   }, 0);
 
-  const spacing = totalLength / (count + 1);
+  const compressionFactor = 0.9;
+  const usableLength = totalLength * compressionFactor;
+  const startOffset = (totalLength - usableLength) / 2;
+  const spacing = usableLength / (count + 1);
   const result: { x: number; y: number; angle: number }[] = [];
 
-  let currentDist = spacing;
-  let segmentStart = 0;
+  let currentDist = startOffset + spacing;
   let accumulated = 0;
 
   for (let i = 1; i < points.length && result.length < count; i++) {
@@ -87,9 +84,9 @@ export function Route({ route, waypoints, claimedBy, onClaim }: RouteProps) {
           <g key={idx}>
             <rect
               x={pos.x - 9}
-              y={pos.y - 4.5}
+              y={pos.y - 4}
               width={18}
-              height={9}
+              height={8}
               rx={2}
               fill={isClaimed ? PLAYER_COLORS[claimedBy % PLAYER_COLORS.length] : color}
               stroke={isClaimed ? '#222' : '#000'}
