@@ -1,8 +1,10 @@
 import networkx as nx
 import csv
+from pathlib import Path
 
 def load_board():
-    with open('data/routes.csv', 'r') as f:
+    data_path = Path(__file__).parent.parent / 'data' / 'routes.csv'
+    with open(data_path, 'r') as f:
         reader = csv.reader(f)
         next(reader)
         G = nx.MultiGraph()
