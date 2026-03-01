@@ -5,7 +5,7 @@ import torch.optim as optim
 from torch_geometric.data import Batch
 from collections import deque
 import random
-import copy
+
 
 from src.game import Game
 from src.ml.state_encoder import StateEncoder
@@ -148,7 +148,7 @@ class ParallelSelfPlay:
         return all_trajectories, all_rewards
 # hidden dim is width of network layers want to try 256 and 384 
 class SelfPlayTrainer:
-    def __init__(self, hidden_dim=256, lr=3e-4, gamma=0.97):
+    def __init__(self, hidden_dim=256, lr=3e-4, gamma=0.97, entropy_coef=0.01):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
 
@@ -166,6 +166,7 @@ class SelfPlayTrainer:
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
         self.gamma = gamma
+        self.entropy_coef = entropy_coef
 
         self.action_to_idx = {}
         self.idx_to_action = {}
@@ -260,6 +261,7 @@ class SelfPlayTrainer:
     def train_on_trajectories(self, trajectories, rewards):
         total_policy_loss = 0
         total_value_loss = 0
+        total_entropy = 0
         num_steps = 0
 
         for player_idx in range(2):
@@ -282,18 +284,21 @@ class SelfPlayTrainer:
                 policy_logits, value = self.model(data)
 
                 log_probs = F.log_softmax(policy_logits, dim=1)
+                probs = F.softmax(policy_logits, dim=1)
 
                 if action_idx < log_probs.shape[1]:
                     advantage = G - value.item()
                     policy_loss = -log_probs[0, action_idx] * advantage
                     value_loss = F.mse_loss(value, torch.tensor([[G]], device=self.device))
+                    entropy = -(probs * log_probs).sum()
 
                     total_policy_loss += policy_loss
                     total_value_loss += value_loss
+                    total_entropy += entropy
                     num_steps += 1
 
         if num_steps > 0:
-            loss = (total_policy_loss + 0.5 * total_value_loss) / num_steps
+            loss = (total_policy_loss + 0.5 * total_value_loss - self.entropy_coef * total_entropy) / num_steps
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -377,7 +382,7 @@ class SelfPlayTrainer:
         print(f"Model saved to {path}")
 
     def load(self, path):
-        checkpoint = torch.load(path)
+        checkpoint = torch.load(path, weights_only=False)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.action_to_idx = checkpoint['action_to_idx']
@@ -440,7 +445,7 @@ if __name__ == "__main__":
 
     parallel = ParallelSelfPlay(trainer, batch_size=batch_size)
     print(f"Model parameters: {sum(p.numel() for p in trainer.model.parameters()):,}")
-    print(f"Hidden dim: 256, LR: {lr}, Gamma: 0.97")
+    print(f"Hidden dim: 256, LR: {lr}, Gamma: 0.97, Entropy: 0.01")
 
     print("\n--- Initial Evaluation ---")
     init_random = trainer.evaluate_vs_random(100)
