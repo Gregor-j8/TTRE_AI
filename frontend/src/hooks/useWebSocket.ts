@@ -9,6 +9,7 @@ interface ServerState {
   gameOver: boolean;
   finalRound: boolean;
   legalActions: LegalAction[];
+  mode?: string;
 }
 
 interface WebSocketMessage {
@@ -57,11 +58,17 @@ export function useWebSocket(gameId: string = 'default') {
     };
   }, [gameId, setStateFromServer]);
 
-  const startGame = useCallback((gameMode: 'visualizer' | 'singleplayer') => {
+  const startGame = useCallback((
+    gameMode: 'visualizer' | 'singleplayer',
+    playerCount: number = 2,
+    aiTypes: string[] = ['ticket_focused']
+  ) => {
     setMode(gameMode);
     wsRef.current?.send(JSON.stringify({
       type: 'start_game',
       mode: gameMode,
+      playerCount,
+      aiTypes,
     }));
   }, []);
 
@@ -72,10 +79,18 @@ export function useWebSocket(gameId: string = 'default') {
     }));
   }, []);
 
+  const setSpeed = useCallback((speed: number) => {
+    wsRef.current?.send(JSON.stringify({
+      type: 'set_speed',
+      speed,
+    }));
+  }, []);
+
   return {
     connected,
     mode,
     startGame,
     sendAction,
+    setSpeed,
   };
 }

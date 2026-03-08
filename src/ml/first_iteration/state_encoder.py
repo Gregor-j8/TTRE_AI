@@ -19,12 +19,11 @@ class StateEncoder:
 
     def encode_state(self, game_state, player_idx):
         player = game_state.list_of_players[player_idx]
-        opponent_idx = 1 - player_idx
-        opponent = game_state.list_of_players[opponent_idx]
+        opponents = [p for i, p in enumerate(game_state.list_of_players) if i != player_idx]
 
-        node_features = self._encode_nodes(player, opponent)
+        node_features = self._encode_nodes(player, opponents)
         edge_index, edge_features = self._encode_edges(game_state, player)
-        private_state = self._encode_private_state(game_state, player, opponent)
+        private_state = self._encode_private_state(game_state, player, opponents)
 
         data = Data(
             x=node_features,
@@ -34,7 +33,7 @@ class StateEncoder:
         )
         return data
 
-    def _encode_nodes(self, player, opponent):
+    def _encode_nodes(self, player, opponents):
         features = []
 
         ticket_sources = set()
@@ -44,7 +43,9 @@ class StateEncoder:
             ticket_targets.add(ticket[1])
 
         my_station_cities = set(player.stations_built)
-        opp_station_cities = set(opponent.stations_built)
+        opp_station_cities = set()
+        for opp in opponents:
+            opp_station_cities.update(opp.stations_built)
 
         for city in self.board.nodes():
             node_feat = [
@@ -126,15 +127,15 @@ class StateEncoder:
                 return 1.0
             return 0.0
 
-    def _encode_private_state(self, game_state, player, opponent):
+    def _encode_private_state(self, game_state, player, opponents):
         hand = [player.hand.get(card, 0) / 12.0 for card in CARD_TYPES]
 
         trains = player.trains / 45.0
         stations = player.stations / 3.0
-        opp_trains = opponent.trains / 45.0
+        opp_trains = min(opp.trains for opp in opponents) / 45.0 if opponents else 0.0
 
         my_points = player.points / 100.0
-        opp_points = opponent.points / 100.0
+        opp_points = max(opp.points for opp in opponents) / 100.0 if opponents else 0.0
 
         num_tickets = len(player.tickets) / 10.0
 

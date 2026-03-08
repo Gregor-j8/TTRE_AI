@@ -33,14 +33,13 @@ class StateEncoderV5:
 
     def encode_state(self, game_state, player_idx):
         player = game_state.list_of_players[player_idx]
-        opponent_idx = 1 - player_idx
-        opponent = game_state.list_of_players[opponent_idx]
+        opponents = [p for i, p in enumerate(game_state.list_of_players) if i != player_idx]
 
-        node_features = self._encode_nodes(player, opponent)
+        node_features = self._encode_nodes(player, opponents)
         edge_index, edge_features = self._encode_edges(game_state, player)
-        private_state = self._encode_private_state(game_state, player, opponent)
-        ticket_features = self._encode_tickets(game_state, player, opponent)
-        urgency_features = self._encode_urgency(game_state, player, opponent)
+        private_state = self._encode_private_state(game_state, player, opponents)
+        ticket_features = self._encode_tickets(game_state, player, opponents)
+        urgency_features = self._encode_urgency(game_state, player, opponents)
 
         combined_private = torch.cat([private_state, ticket_features, urgency_features])
 
@@ -52,7 +51,7 @@ class StateEncoderV5:
         )
         return data
 
-    def _encode_nodes(self, player, opponent):
+    def _encode_nodes(self, player, opponents):
         features = []
 
         ticket_sources = set()
@@ -62,10 +61,14 @@ class StateEncoderV5:
             ticket_targets.add(ticket[1])
 
         my_station_cities = set(player.stations_built)
-        opp_station_cities = set(opponent.stations_built)
+        opp_station_cities = set()
+        for opp in opponents:
+            opp_station_cities.update(opp.stations_built)
 
         my_connected = self._get_connected_cities(player)
-        opp_connected = self._get_connected_cities(opponent)
+        opp_connected = set()
+        for opp in opponents:
+            opp_connected.update(self._get_connected_cities(opp))
 
         for city in self.board.nodes():
             node_feat = [
@@ -189,7 +192,7 @@ class StateEncoderV5:
         points_table = {1: 1, 2: 2, 3: 4, 4: 7, 5: 10, 6: 15}
         return points_table.get(length, 0)
 
-    def _encode_private_state(self, game_state, player, opponent):
+    def _encode_private_state(self, game_state, player, opponents):
         hand = [player.hand.get(card, 0) / 12.0 for card in CARD_TYPES]
 
         total_cards = sum(player.hand.values())
@@ -197,15 +200,16 @@ class StateEncoderV5:
 
         trains = player.trains / 45.0
         stations = player.stations / 3.0
-        opp_trains = opponent.trains / 45.0
-        opp_stations = opponent.stations / 3.0
+
+        opp_trains = min(opp.trains for opp in opponents) / 45.0 if opponents else 0.0
+        opp_stations = sum(opp.stations for opp in opponents) / (3.0 * len(opponents)) if opponents else 0.0
 
         my_points = player.points / 100.0
-        opp_points = opponent.points / 100.0
+        opp_points = max(opp.points for opp in opponents) / 100.0 if opponents else 0.0
 
         num_tickets = len(player.tickets) / 10.0
         num_claimed = len(player.claimed_routes) / 20.0
-        opp_claimed = len(opponent.claimed_routes) / 20.0
+        opp_claimed = sum(len(opp.claimed_routes) for opp in opponents) / (20.0 * len(opponents)) if opponents else 0.0
 
         features = (
             hand +
@@ -214,14 +218,16 @@ class StateEncoderV5:
         )
         return torch.tensor(features, dtype=torch.float)
 
-    def _encode_tickets(self, game_state, player, opponent):
+    def _encode_tickets(self, game_state, player, opponents):
         ticket_features = []
 
         my_routes = set((r[0], r[1]) for r in player.claimed_routes)
         my_routes.update((r[1], r[0]) for r in player.claimed_routes)
 
-        opp_routes = set((r[0], r[1]) for r in opponent.claimed_routes)
-        opp_routes.update((r[1], r[0]) for r in opponent.claimed_routes)
+        opp_routes = set()
+        for opp in opponents:
+            opp_routes.update((r[0], r[1]) for r in opp.claimed_routes)
+            opp_routes.update((r[1], r[0]) for r in opp.claimed_routes)
 
         available_graph = self._build_available_graph(player, my_routes, opp_routes)
         my_network = self._build_player_network(player)
@@ -393,9 +399,9 @@ class StateEncoderV5:
         paths = self.max_paths_per_ticket * self._get_path_feature_dim()
         return base + paths
 
-    def _encode_urgency(self, game_state, player, opponent):
+    def _encode_urgency(self, game_state, player, opponents):
         my_trains = player.trains
-        opp_trains = opponent.trains
+        opp_trains = min(opp.trains for opp in opponents) if opponents else 45
 
         end_game_trigger = 1.0 if opp_trains <= 2 else (1.0 - opp_trains / 45.0)
         my_end_game = 1.0 if my_trains <= 2 else 0.0
@@ -408,7 +414,9 @@ class StateEncoderV5:
         cards_to_trains = total_cards / max(my_trains, 1) / 2.0
         cards_to_trains = min(cards_to_trains, 1.0)
 
-        opp_pace = len(opponent.claimed_routes) / max(len(player.claimed_routes) + 1, 1)
+        total_opp_routes = sum(len(opp.claimed_routes) for opp in opponents) if opponents else 0
+        avg_opp_routes = total_opp_routes / len(opponents) if opponents else 0
+        opp_pace = avg_opp_routes / max(len(player.claimed_routes) + 1, 1)
         opp_pace = min(opp_pace / 2.0, 1.0)
 
         incomplete_tickets = 0

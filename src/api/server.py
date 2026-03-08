@@ -1,13 +1,40 @@
 import asyncio
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Callable
 from dataclasses import asdict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from src.game import Game
-from src.players.ticket_focused import ticket_focused_choose
-from src.players.random_player import random_choose
+from src.players import (
+    random_choose,
+    ticket_focused_choose,
+    smart_ticket_choose,
+    greedy_routes_choose,
+    overall_game_choose,
+    blitz_choose,
+    v5_best_choose,
+    v5_final_choose,
+    v5_mixed_choose,
+    v4_best_choose,
+    v3_final_choose,
+    v1_best_choose,
+)
+
+AI_PLAYERS = {
+    "random": random_choose,
+    "greedy": greedy_routes_choose,
+    "ticket_focused": ticket_focused_choose,
+    "smart_ticket": smart_ticket_choose,
+    "overall_game": overall_game_choose,
+    "blitz": blitz_choose,
+    "v5_best": v5_best_choose,
+    "v5_final": v5_final_choose,
+    "v5_mixed": v5_mixed_choose,
+    "v4_best": v4_best_choose,
+    "v3_final": v3_final_choose,
+    "v1_best": v1_best_choose,
+}
 
 app = FastAPI()
 
@@ -20,13 +47,19 @@ app.add_middleware(
 )
 
 class GameSession:
-    def __init__(self, mode: str = "visualizer"):
-        self.game = Game(2)
+    def __init__(self, mode: str = "visualizer", player_count: int = 2, ai_types: List[str] = None):
+        self.game = Game(player_count)
         self.mode = mode
+        self.player_count = player_count
+        self.ai_types = ai_types or ["ticket_focused"] * (player_count - 1)
         self.websocket: Optional[WebSocket] = None
         self.human_player_idx = 0
         self.pending_action = None
         self.action_event = asyncio.Event()
+        self.speed = 1.0
+
+    def get_ai_choose_fns(self) -> List[Callable]:
+        return [AI_PLAYERS.get(ai_type, ticket_focused_choose) for ai_type in self.ai_types]
 
     def get_state_for_frontend(self) -> dict:
         claimed_routes = {}
@@ -38,11 +71,20 @@ class GameSession:
 
         players = []
         for idx, player in enumerate(self.game.state.list_of_players):
+            tickets = [
+                {"source": t[0], "target": t[1], "points": t[2]}
+                for t in player.tickets
+            ]
+            pending_tickets = [
+                {"source": t[0], "target": t[1], "points": t[2]}
+                for t in player.pending_tickets
+            ]
             players.append({
                 "hand": dict(player.hand),
                 "trains": player.trains,
                 "points": player.points,
-                "tickets": player.tickets,
+                "tickets": tickets,
+                "pendingTickets": pending_tickets,
                 "stations": player.stations,
             })
 
@@ -57,6 +99,8 @@ class GameSession:
                     "source2": action.source2,
                     "card1": action.card1,
                     "card2": action.card2,
+                    "colorCount": action.color_count,
+                    "locoCount": action.loco_count,
                 })
 
         return {
@@ -93,8 +137,13 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str):
 
             if data["type"] == "start_game":
                 mode = data.get("mode", "visualizer")
+                player_count = data.get("playerCount", 2)
+                ai_types = data.get("aiTypes", ["ticket_focused"] * (player_count - 1))
+
                 session.mode = mode
-                session.game = Game(2)
+                session.player_count = player_count
+                session.ai_types = ai_types
+                session.game = Game(player_count)
 
                 await websocket.send_json({
                     "type": "state",
@@ -113,24 +162,25 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str):
                     session.action_event.set()
 
             elif data["type"] == "set_speed":
-                pass
+                session.speed = max(0.1, min(5.0, data.get("speed", 1.0)))
 
     except WebSocketDisconnect:
         if game_id in sessions:
             del sessions[game_id]
 
 async def run_visualizer_game(session: GameSession):
-    choose_fns = [ticket_focused_choose, ticket_focused_choose]
+    choose_fns = session.get_ai_choose_fns()
     turn = 0
+    player_count = session.player_count
 
     while not session.game.game_over and session.websocket:
         actions = session.game.get_legal_actions()
         if not actions:
-            session.game.current_player_idx = (session.game.current_player_idx + 1) % 2
+            session.game.current_player_idx = (session.game.current_player_idx + 1) % player_count
             continue
 
         player = session.game.get_current_player()
-        choose_fn = choose_fns[session.game.current_player_idx]
+        choose_fn = choose_fns[session.game.current_player_idx % len(choose_fns)]
         action = choose_fn(session.game.state, player, actions, session.game.board)
 
         session.game.step(action)
@@ -144,15 +194,15 @@ async def run_visualizer_game(session: GameSession):
             await session.websocket.send_json({
                 "type": "action",
                 "data": {
-                    "player": (session.game.current_player_idx - 1) % 2,
+                    "player": (session.game.current_player_idx - 1) % player_count,
                     "action": action.type,
                     "turn": turn
                 }
             })
-        except:
+        except Exception:
             break
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.5 / session.speed)
 
         if turn > 500:
             break
@@ -165,17 +215,18 @@ async def run_visualizer_game(session: GameSession):
                     "scores": [p.points for p in session.game.state.list_of_players]
                 }
             })
-        except:
+        except Exception:
             pass
 
 async def run_singleplayer_game(session: GameSession):
-    ai_choose = ticket_focused_choose
+    ai_choose_fns = session.get_ai_choose_fns()
     turn = 0
+    player_count = session.player_count
 
     while not session.game.game_over and session.websocket:
         actions = session.game.get_legal_actions()
         if not actions:
-            session.game.current_player_idx = (session.game.current_player_idx + 1) % 2
+            session.game.current_player_idx = (session.game.current_player_idx + 1) % player_count
             continue
 
         current_idx = session.game.current_player_idx
@@ -190,7 +241,7 @@ async def run_singleplayer_game(session: GameSession):
                     "type": "your_turn",
                     "data": {"legalActions": len(actions)}
                 })
-            except:
+            except Exception:
                 break
 
             session.action_event.clear()
@@ -203,8 +254,10 @@ async def run_singleplayer_game(session: GameSession):
                 action = actions[0]
         else:
             player = session.game.get_current_player()
+            ai_idx = current_idx - 1 if current_idx > session.human_player_idx else current_idx
+            ai_choose = ai_choose_fns[ai_idx % len(ai_choose_fns)]
             action = ai_choose(session.game.state, player, actions, session.game.board)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.3 / session.speed)
 
         session.game.step(action)
         turn += 1
@@ -214,7 +267,7 @@ async def run_singleplayer_game(session: GameSession):
                 "type": "state",
                 "data": session.get_state_for_frontend()
             })
-        except:
+        except Exception:
             break
 
         if turn > 500:
@@ -228,7 +281,7 @@ async def run_singleplayer_game(session: GameSession):
                     "scores": [p.points for p in session.game.state.list_of_players]
                 }
             })
-        except:
+        except Exception:
             pass
 
 if __name__ == "__main__":

@@ -19,7 +19,9 @@ class Game:
     def _deal_initial_cards(self):
         for player in self.state.list_of_players:
             for _ in range(4):
-                available = [c for c, count in self.state.draw_pile.items() if count > 0]
+                available = []
+                for card, count in self.state.draw_pile.items():
+                    available.extend([card] * count)
                 if available:
                     card = random.choice(available)
                     self.state.draw_pile[card] -= 1

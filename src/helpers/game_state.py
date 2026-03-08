@@ -67,16 +67,14 @@ class GameState:
         self.discard_pile.extend(self.face_up_cards)
         self.face_up_cards = []
         for _ in range(5):
-            available_cards = [
-                card for card in self.draw_pile
-                if self.draw_pile[card] > 0
-            ]
+            available_cards = []
+            for card, count in self.draw_pile.items():
+                available_cards.extend([card] * count)
             if not available_cards:
                 self.reshuffle_discard()
-                available_cards = [
-                    card for card in self.draw_pile
-                    if self.draw_pile[card] > 0
-                ]
+                available_cards = []
+                for card, count in self.draw_pile.items():
+                    available_cards.extend([card] * count)
             if available_cards:
                 random_card = random.choice(available_cards)
                 self.face_up_cards.append(random_card)

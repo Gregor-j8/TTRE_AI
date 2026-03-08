@@ -1,11 +1,18 @@
 import { create } from 'zustand';
 import type { Route } from '../types/board';
 
-interface PlayerInfo {
+export interface Ticket {
+  source: string;
+  target: string;
+  points: number;
+}
+
+export interface PlayerInfo {
   hand: Record<string, number>;
   trains: number;
   points: number;
-  tickets: unknown[];
+  tickets: Ticket[];
+  pendingTickets?: Ticket[];
   stations: number;
 }
 
@@ -16,7 +23,11 @@ interface LegalAction {
   source2: string | null;
   card1: string | null;
   card2: string | null;
+  colorCount?: number;
+  locoCount?: number;
 }
+
+export type GameMode = 'visualizer' | 'singleplayer' | null;
 
 interface GameState {
   currentPlayerIdx: number;
@@ -28,6 +39,7 @@ interface GameState {
   finalRound: boolean;
   legalActions: LegalAction[];
   connectedToServer: boolean;
+  mode: GameMode;
 
   claimRoute: (route: Route) => void;
   resetGame: () => void;
@@ -40,6 +52,7 @@ interface GameState {
     gameOver: boolean;
     finalRound: boolean;
     legalActions: LegalAction[];
+    mode?: string;
   }) => void;
 }
 
@@ -57,6 +70,7 @@ export const useGameState = create<GameState>((set, get) => ({
   finalRound: false,
   legalActions: [],
   connectedToServer: false,
+  mode: null,
 
   claimRoute: (route: Route) => {
     const routeId = getRouteId(route);
@@ -82,6 +96,7 @@ export const useGameState = create<GameState>((set, get) => ({
       gameOver: false,
       finalRound: false,
       legalActions: [],
+      mode: null,
     });
   },
 
@@ -106,6 +121,7 @@ export const useGameState = create<GameState>((set, get) => ({
       legalActions: state.legalActions || [],
       connectedToServer: true,
       playerCount: state.players.length || 2,
+      mode: (state.mode as GameMode) || null,
     });
   },
 }));

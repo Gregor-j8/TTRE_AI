@@ -1,3 +1,4 @@
+import random
 from dataclasses import dataclass
 
 @dataclass
@@ -9,6 +10,23 @@ class Action:
     card2: str = None
     color_count: int = 0
     loco_count: int = 0
+
+def _draw_random_card(game_state):
+    """Draw a random card from draw pile, weighted by card count."""
+    available = []
+    for card, count in game_state.draw_pile.items():
+        available.extend([card] * count)
+    if not available:
+        if not game_state.reshuffle_discard():
+            return None
+        available = []
+        for card, count in game_state.draw_pile.items():
+            available.extend([card] * count)
+    if not available:
+        return None
+    card = random.choice(available)
+    game_state.draw_pile[card] -= 1
+    return card
 
 def _draw_card_action(game_state):
     actions = []
@@ -74,7 +92,7 @@ def _claim_route_actions(game_state, player):
                                 loco_count=loco_used
                             ))
         else:
-            color_key = route_color + '_cards'
+            color_key = route_color.lower() + '_cards'
             color_cards = player.hand.get(color_key, 0)
             for color_used in range(route_length + 1):
                 loco_used = route_length - color_used
@@ -167,16 +185,9 @@ def execute_action(action, game_state, player):
         _execute_build_station(action, game_state, player)
 
 def _execute_draw_card(action, game_state, player):
-    import random
-
     if action.source1 == "deck":
-        available = [c for c, count in game_state.draw_pile.items() if count > 0]
-        if not available:
-            game_state.reshuffle_discard()
-            available = [c for c, count in game_state.draw_pile.items() if count > 0]
-        if available:
-            card = random.choice(available)
-            game_state.draw_pile[card] -= 1
+        card = _draw_random_card(game_state)
+        if card:
             player.hand[card] = player.hand.get(card, 0) + 1
     else:
         idx = game_state.face_up_cards.index(action.card1)
@@ -185,13 +196,8 @@ def _execute_draw_card(action, game_state, player):
         _refill_face_up(game_state)
 
     if action.source2 == "deck":
-        available = [c for c, count in game_state.draw_pile.items() if count > 0]
-        if not available:
-            game_state.reshuffle_discard()
-            available = [c for c, count in game_state.draw_pile.items() if count > 0]
-        if available:
-            card = random.choice(available)
-            game_state.draw_pile[card] -= 1
+        card = _draw_random_card(game_state)
+        if card:
             player.hand[card] = player.hand.get(card, 0) + 1
     elif action.source2 == "face_up":
         if action.card2 in game_state.face_up_cards:
@@ -200,13 +206,8 @@ def _execute_draw_card(action, game_state, player):
             player.hand[card] = player.hand.get(card, 0) + 1
             _refill_face_up(game_state)
         else:
-            available = [c for c, count in game_state.draw_pile.items() if count > 0]
-            if not available:
-                game_state.reshuffle_discard()
-                available = [c for c, count in game_state.draw_pile.items() if count > 0]
-            if available:
-                card = random.choice(available)
-                game_state.draw_pile[card] -= 1
+            card = _draw_random_card(game_state)
+            if card:
                 player.hand[card] = player.hand.get(card, 0) + 1
             _refill_face_up(game_state)
 
@@ -217,8 +218,6 @@ def _execute_draw_wild(action, game_state, player):
     _refill_face_up(game_state)
 
 def _execute_claim_route(action, game_state, player):
-    import random
-
     route_id = (action.source1, action.source2, int(action.card1))
     route_data = game_state.board.edges[route_id]
     route_length = route_data['carriages']
@@ -231,13 +230,8 @@ def _execute_claim_route(action, game_state, player):
     if is_tunnel:
         revealed = []
         for _ in range(3):
-            available = [c for c, count in game_state.draw_pile.items() if count > 0]
-            if not available:
-                game_state.reshuffle_discard()
-                available = [c for c, count in game_state.draw_pile.items() if count > 0]
-            if available:
-                card = random.choice(available)
-                game_state.draw_pile[card] -= 1
+            card = _draw_random_card(game_state)
+            if card:
                 revealed.append(card)
 
         extra_needed = sum(1 for c in revealed if c == color_key or c == 'Locomotive')
@@ -306,26 +300,33 @@ def _execute_build_station(action, game_state, player):
     player.stations -= 1
     player.stations_built.append(city)
 
-def _refill_face_up(game_state, depth=0):
-    import random
-    max_depth = 10
+def _refill_face_up(game_state):
+    max_resets = 20
 
-    while len(game_state.face_up_cards) < 5:
-        available = [c for c, count in game_state.draw_pile.items() if count > 0]
-        if not available:
-            if not game_state.reshuffle_discard():
-                break
-            available = [c for c, count in game_state.draw_pile.items() if count > 0]
+    for _ in range(max_resets):
+        while len(game_state.face_up_cards) < 5:
+            available = []
+            for card, count in game_state.draw_pile.items():
+                available.extend([card] * count)
             if not available:
-                break
-        card = random.choice(available)
-        game_state.draw_pile[card] -= 1
-        game_state.face_up_cards.append(card)
+                if not game_state.reshuffle_discard():
+                    break
+                available = []
+                for card, count in game_state.draw_pile.items():
+                    available.extend([card] * count)
+                if not available:
+                    break
+            card = random.choice(available)
+            game_state.draw_pile[card] -= 1
+            game_state.face_up_cards.append(card)
 
-    loco_count = sum(1 for c in game_state.face_up_cards if c == 'Locomotive')
-    if loco_count >= 3 and len(game_state.face_up_cards) == 5 and depth < max_depth:
+        loco_count = sum(1 for c in game_state.face_up_cards if c == 'Locomotive')
+        if loco_count < 3 or len(game_state.face_up_cards) < 5:
+            break
+
         total_cards = sum(game_state.draw_pile.values())
-        if total_cards >= 5 or game_state.discard_pile:
-            game_state.discard_pile.extend(game_state.face_up_cards)
-            game_state.face_up_cards = []
-            _refill_face_up(game_state, depth + 1)
+        if total_cards < 5 and not game_state.discard_pile:
+            break
+
+        game_state.discard_pile.extend(game_state.face_up_cards)
+        game_state.face_up_cards = []
